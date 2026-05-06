@@ -1,0 +1,250 @@
+import { buildingsApi, techniciansApi, assignmentsApi, syncApi, Building, Technician, Assignment } from '@/api';
+import { Platform } from 'react-native';
+
+// Web-compatible storage
+const WebStorage = {
+  getItem: async (key: string): Promise<string | null> => {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      return window.localStorage.getItem(key);
+    }
+    return null;
+  },
+  setItem: async (key: string, value: string): Promise<void> => {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(key, value);
+    }
+  },
+  removeItem: async (key: string): Promise<void> => {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.removeItem(key);
+    }
+  }
+};
+
+class DataService {
+  private isOnline: boolean = true;
+  private pendingChanges: any[] = [];
+  private lastSync: string | null = null;
+  private deviceId: string;
+
+  constructor() {
+    this.deviceId = this.getDeviceId();
+    this.setupNetworkListener();
+    this.loadPendingChanges();
+  }
+
+  private getDeviceId(): string {
+    let deviceId = typeof window !== 'undefined' ? window.localStorage.getItem('deviceId') : null;
+    if (!deviceId) {
+      deviceId = `device_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem('deviceId', deviceId);
+      }
+    }
+    return deviceId;
+  }
+
+  private setupNetworkListener() {
+    if (typeof window !== 'undefined') {
+      window.addEventListener('online', () => {
+        this.isOnline = true;
+        this.syncData();
+      });
+      window.addEventListener('offline', () => {
+        this.isOnline = false;
+      });
+      this.isOnline = navigator.onLine;
+    }
+  }
+
+  private async loadPendingChanges() {
+    const saved = await WebStorage.getItem('pendingChanges');
+    if (saved) {
+      this.pendingChanges = JSON.parse(saved);
+    }
+    this.lastSync = await WebStorage.getItem('lastSync');
+  }
+
+  private async savePendingChanges() {
+    await WebStorage.setItem('pendingChanges', JSON.stringify(this.pendingChanges));
+  }
+
+  // Buildings
+  async getBuildings(serviceId?: string, options?: { status?: string; search?: string }): Promise<Building[]> {
+    try {
+      if (this.isOnline) {
+        const response = serviceId 
+          ? await buildingsApi.getByService(serviceId, options?.status || 'active')
+          : await buildingsApi.getAll(options);
+        
+        if (response.data?.data) {
+          // Cache locally
+          await WebStorage.setItem(`buildings_${serviceId || 'all'}`, JSON.stringify(response.data.data));
+          return response.data.data;
+        }
+      }
+    } catch (error) {
+      console.warn('Failed to fetch from API, using cache:', error);
+    }
+
+    // Fallback to cache
+    const cached = await WebStorage.getItem(`buildings_${serviceId || 'all'}`);
+    return cached ? JSON.parse(cached) : [];
+  }
+
+  async getBuilding(id: string): Promise<Building | null> {
+    try {
+      if (this.isOnline) {
+        const response = await buildingsApi.getById(id);
+        return response.data || null;
+      }
+    } catch (error) {
+      console.warn('Failed to fetch building from API:', error);
+    }
+    return null;
+  }
+
+  async saveBuilding(building: Building): Promise<boolean> {
+    try {
+      if (this.isOnline) {
+        if (building._id) {
+          await buildingsApi.update(building._id, building);
+        } else {
+          await buildingsApi.create(building);
+        }
+        return true;
+      } else {
+        // Queue for sync
+        this.pendingChanges.push({
+          type: 'buildings_update',
+          data: [building],
+          timestamp: Date.now()
+        });
+        await this.savePendingChanges();
+        return true;
+      }
+    } catch (error) {
+      console.error('Failed to save building:', error);
+      return false;
+    }
+  }
+
+  // Technicians
+  async getTechnicians(options?: { status?: string }): Promise<Technician[]> {
+    try {
+      if (this.isOnline) {
+        const response = await techniciansApi.getAll(options);
+        if (response.data?.data) {
+          await WebStorage.setItem('technicians', JSON.stringify(response.data.data));
+          return response.data.data;
+        }
+      }
+    } catch (error) {
+      console.warn('Failed to fetch technicians:', error);
+    }
+
+    const cached = await WebStorage.getItem('technicians');
+    return cached ? JSON.parse(cached) : [];
+  }
+
+  // Assignments
+  async getAssignments(buildingId?: string): Promise<Assignment[]> {
+    try {
+      if (this.isOnline && buildingId) {
+        const response = await assignmentsApi.getByBuilding(buildingId);
+        return response.data?.data || [];
+      }
+    } catch (error) {
+      console.warn('Failed to fetch assignments:', error);
+    }
+    return [];
+  }
+
+  async createAssignment(assignment: Omit<Assignment, '_id'>): Promise<boolean> {
+    try {
+      if (this.isOnline) {
+        await assignmentsApi.create(assignment);
+        return true;
+      } else {
+        this.pendingChanges.push({
+          type: 'assignment',
+          ...assignment,
+          timestamp: Date.now()
+        });
+        await this.savePendingChanges();
+        return true;
+      }
+    } catch (error) {
+      console.error('Failed to create assignment:', error);
+      return false;
+    }
+  }
+
+  // Sync
+  async syncData(): Promise<{ success: boolean; message: string }> {
+    if (!this.isOnline || this.pendingChanges.length === 0) {
+      return { success: true, message: 'Nothing to sync' };
+    }
+
+    try {
+      const response = await syncApi.sync(
+        this.pendingChanges,
+        this.deviceId,
+        this.lastSync || ''
+      );
+
+      if (response.data) {
+        this.pendingChanges = [];
+        await this.savePendingChanges();
+        this.lastSync = response.data.syncTimestamp;
+        await WebStorage.setItem('lastSync', this.lastSync);
+        
+        return { 
+          success: true, 
+          message: `Sync completed: ${response.data.results.buildings.updated} updated, ${response.data.results.buildings.created} created` 
+        };
+      }
+    } catch (error) {
+      console.error('Sync failed:', error);
+      return { success: false, message: 'Sync failed' };
+    }
+
+    return { success: false, message: 'Sync error' };
+  }
+
+  getNetworkStatus(): boolean {
+    return this.isOnline;
+  }
+
+  getPendingChangesCount(): number {
+    return this.pendingChanges.length;
+  }
+
+  // Utility methods for storage
+  async saveToStorage(key: string, data: any): Promise<void> {
+    await WebStorage.setItem(key, JSON.stringify(data));
+  }
+
+  async loadFromStorage(key: string): Promise<any> {
+    const data = await WebStorage.getItem(key);
+    return data ? JSON.parse(data) : null;
+  }
+
+  async setPendingChanges(changes: any[]): Promise<void> {
+    this.pendingChanges = changes;
+    await WebStorage.setItem('pendingChanges', JSON.stringify(changes));
+  }
+
+  // Assignment storage methods
+  async loadAssignments(): Promise<any[]> {
+    const data = await WebStorage.getItem('buildingAssignments');
+    return data ? JSON.parse(data) : [];
+  }
+
+  async saveAssignments(assignments: any[]): Promise<void> {
+    await WebStorage.setItem('buildingAssignments', JSON.stringify(assignments));
+  }
+}
+
+export const dataService = new DataService();
+export default dataService;
