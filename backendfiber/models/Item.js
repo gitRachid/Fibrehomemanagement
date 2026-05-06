@@ -34,6 +34,5 @@ const itemSchema = new mongoose.Schema({
 
 // Index pour recherche rapide par service
 itemSchema.index({ serviceId: 1, status: 1 });
-itemSchema.index({ id: 1 });
 
 module.exports = mongoose.model('Item', itemSchema);
