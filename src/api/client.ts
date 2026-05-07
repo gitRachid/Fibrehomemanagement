@@ -69,3 +69,21 @@ export const apiClient = {
     request<T>(endpoint, { method: 'PUT', body: JSON.stringify(body) }),
   delete: <T>(endpoint: string) => request<T>(endpoint, { method: 'DELETE' }),
 };
+
+/**
+ * Extract `.data` from the standard server envelope `{ success, data, … }`.
+ * Every backend route returns this shape; use these helpers instead of
+ * manually accessing `response.data` / `response.data?.data` everywhere.
+ */
+export function unwrapData<T>(envelope: { data: T }): T {
+  return envelope.data;
+}
+
+export function unwrapList<T>(envelope: { data?: T[] }): T[] {
+  return envelope.data ?? [];
+}
+
+export async function getAuthHeaders(): Promise<Record<string, string>> {
+  const token = getToken ? await getToken() : null;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}

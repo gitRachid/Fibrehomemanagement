@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { ActivityIndicator, Pressable, Text, View } from 'react-native';
 import { Link, Redirect, useRouter } from 'expo-router';
 import { AppTextInput } from '@/components/app-text-input';
-import { authApi } from '@/api';
+import { authApi, unwrapData } from '@/api';
 import { useAuth } from '@/ctx';
 
 export default function SignInScreen() {
@@ -29,7 +29,7 @@ export default function SignInScreen() {
     setErrors({});
     try {
       const response = await authApi.login(email.trim().toLowerCase(), password);
-      const token = response.data?.data?.token;
+      const { token } = unwrapData<{ token: string }>(response);
       if (!token) throw new Error('No token returned by API');
       await login(token);
       router.replace('/(app)/dashboard');
