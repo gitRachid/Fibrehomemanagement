@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { syncApi, PendingChange } from '@/api';
+import { syncApi, PendingChange, unwrapData } from '@/api';
+import type { SyncResponse } from '@/api/sync';
 
 const SYNC_KEY = 'sync';
 
@@ -8,7 +9,7 @@ export const useSyncStatus = (lastSync?: string) => {
     queryKey: [SYNC_KEY, 'status', lastSync],
     queryFn: async () => {
       const response = await syncApi.getStatus(lastSync);
-      return response.data;
+      return response as unknown as { hasPendingChanges: boolean; pendingBuildings: number; pendingAssignments: number; serverTimestamp: string };
     },
   });
 };
@@ -27,7 +28,7 @@ export const useSync = () => {
       lastSync?: string;
     }) => {
       const response = await syncApi.sync(pendingChanges, deviceId, lastSync);
-      return response.data;
+      return response as unknown as SyncResponse;
     },
     onSuccess: () => {
       // Invalidate all data queries to refresh with synced data

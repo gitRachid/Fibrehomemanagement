@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { buildingsApi, Building } from '@/api';
+import { buildingsApi, Building, unwrapList, unwrapData } from '@/api';
 
 const BUILDINGS_KEY = 'buildings';
 
@@ -9,10 +9,10 @@ export const useBuildings = (serviceId?: string, options?: { status?: string; se
     queryFn: async () => {
       if (serviceId) {
         const response = await buildingsApi.getByService(serviceId, options?.status || 'active');
-        return (response.data as any)?.data || response.data || [];
+        return unwrapList<Building>(response);
       }
       const response = await buildingsApi.getAll(options);
-      return (response.data as any)?.data || response.data || [];
+      return unwrapList<Building>(response);
     },
   });
 };
@@ -22,7 +22,7 @@ export const useBuilding = (id: string) => {
     queryKey: [BUILDINGS_KEY, id],
     queryFn: async () => {
       const response = await buildingsApi.getById(id);
-      return response.data;
+      return unwrapData<Building>(response);
     },
     enabled: !!id,
   });

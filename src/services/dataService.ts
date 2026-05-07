@@ -1,4 +1,4 @@
-import { Assignment, assignmentsApi, Building, buildingsApi, Technician, techniciansApi } from '@/api';
+import { Assignment, assignmentsApi, Building, buildingsApi, Technician, techniciansApi, unwrapList } from '@/api';
 import { QueueManager } from './queueManager';
 import { SyncService } from './syncService';
 
@@ -194,7 +194,7 @@ class DataService {
       const response = serviceId
         ? await buildingsApi.getByService(serviceId, options?.status || 'active')
         : await buildingsApi.getAll(options);
-      const data = response.data?.data ?? [];
+      const data = unwrapList<Building>(response);
       await this.setCache(cacheKey, data, CACHE_TTL_MS.buildings);
       return data;
     } catch (error) {
@@ -241,7 +241,7 @@ class DataService {
 
     try {
       const response = await techniciansApi.getAll(options);
-      const data = response.data?.data ?? [];
+      const data = unwrapList<Technician>(response);
       await this.setCache(cacheKey, data, CACHE_TTL_MS.technicians);
       return data;
     } catch (error) {
@@ -261,7 +261,7 @@ class DataService {
 
     try {
       const response = await assignmentsApi.getByBuilding(buildingId);
-      const data = response.data?.data ?? [];
+      const data = unwrapList<Assignment>(response);
       await this.setCache(cacheKey, data, CACHE_TTL_MS.assignments);
       return data;
     } catch (error) {

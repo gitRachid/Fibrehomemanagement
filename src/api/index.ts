@@ -1,4 +1,4 @@
-export { apiClient } from './client';
+export { apiClient, unwrapData, unwrapList, getAuthHeaders } from './client';
 export { buildingsApi, type Building, type Photo } from './buildings';
 export { techniciansApi, type Technician } from './technicians';
 export { assignmentsApi, type Assignment } from './assignments';

@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { itemsApi, Item } from '@/api';
+import { itemsApi, Item, unwrapList, unwrapData } from '@/api';
 
 const ITEMS_KEY = 'items';
 
@@ -9,11 +9,10 @@ export const useItems = (serviceId?: string, options?: { status?: string; search
     queryFn: async () => {
       if (serviceId) {
         const response = await itemsApi.getByService(serviceId, options?.status || 'active');
-        console.log('[useItems] Response:', response);
-        return (response.data as any)?.data || response.data || [];
+        return unwrapList<Item>(response);
       }
       const response = await itemsApi.getAll(options);
-      return (response.data as any)?.data || response.data || [];
+      return unwrapList<Item>(response);
     },
     enabled: !!serviceId,
   });
@@ -24,7 +23,7 @@ export const useItem = (id: string) => {
     queryKey: [ITEMS_KEY, id],
     queryFn: async () => {
       const response = await itemsApi.getById(id);
-      return response.data;
+      return unwrapData<Item>(response);
     },
     enabled: !!id,
   });

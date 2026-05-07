@@ -59,7 +59,6 @@ export interface BuildingsResponse {
 }
 
 export const buildingsApi = {
-  // Get all buildings with filters
   getAll: async (params?: {
     serviceId?: string;
     status?: string;
@@ -68,36 +67,29 @@ export const buildingsApi = {
     page?: number;
     limit?: number;
   }) => {
-    const response = await apiClient.get<BuildingsResponse>('/buildings', params as Record<string, string>);
-    return response;
+    return apiClient.get<Building[]>('/buildings', params as Record<string, string>);
   },
 
-  // Get single building
   getById: async (id: string) => {
     return apiClient.get<Building>(`/buildings/${id}`);
   },
 
-  // Get buildings by service
   getByService: async (serviceId: string, status: string = 'active') => {
-    return apiClient.get<BuildingsResponse>(`/buildings/service/${serviceId}`, { status });
+    return apiClient.get<Building[]>(`/buildings/service/${serviceId}`, { status });
   },
 
-  // Create new building
   create: async (building: Omit<Building, '_id'>) => {
     return apiClient.post<Building>('/buildings', building);
   },
 
-  // Update building
   update: async (id: string, building: Partial<Building>) => {
     return apiClient.put<Building>(`/buildings/${id}`, building);
   },
 
-  // Archive building
   archive: async (id: string) => {
     return apiClient.delete<Building>(`/buildings/${id}`);
   },
 
-  // Bulk update
   bulkUpdate: async (buildings: Building[]) => {
     return apiClient.post<{ modifiedCount: number; upsertedCount: number }>('/buildings/bulk-update', { buildings });
   },
