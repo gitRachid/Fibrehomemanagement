@@ -20,6 +20,11 @@ const buildingSchema = new mongoose.Schema({
     required: true,
     index: true
   },
+  zone: {
+    type: String,
+    default: '',
+    index: true
+  },
   codePostal: {
     type: String,
     required: true
@@ -141,7 +146,6 @@ const buildingSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['active', 'archived', 'pending', 'inactive'],
     default: 'active',
     index: true
   },

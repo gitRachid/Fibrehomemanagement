@@ -5,6 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const Photo = require('../models/Photo');
 const Building = require('../models/Building');
+const { writePhotoMetadataOnImage } = require('../utils/photoMetadataStamp');
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({
@@ -29,7 +30,7 @@ const upload = multer({
     const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
     const mimetype = allowedTypes.test(file.mimetype);
     
-    if (extname && mimetype) {
+    if (extname || mimetype) {
       return cb(null, true);
     } else {
       cb(new Error('Only images are allowed'));
@@ -61,7 +62,11 @@ router.post('/upload', upload.single('photo'), async (req, res) => {
       buildingId, 
       type, 
       name,
-      id 
+      id,
+      timestamp,
+      idImmeuble,
+      gpsLatitude,
+      gpsLongitude
     } = req.body;
 
     // Verify building exists
@@ -71,16 +76,32 @@ router.post('/upload', upload.single('photo'), async (req, res) => {
       return res.status(404).json({ success: false, message: 'Building not found' });
     }
 
+    const savedTimestamp = timestamp ? new Date(timestamp) : new Date();
+    const savedIdImmeuble = idImmeuble || building.idImmeuble || '';
+    const savedGpsLatitude = gpsLatitude || '';
+    const savedGpsLongitude = gpsLongitude || '';
+
+    await writePhotoMetadataOnImage(req.file.path, {
+      timestamp: savedTimestamp,
+      idImmeuble: savedIdImmeuble,
+      gpsLatitude: savedGpsLatitude,
+      gpsLongitude: savedGpsLongitude,
+    });
+    const updatedFileStats = fs.statSync(req.file.path);
+
     const photo = await Photo.create({
       id: id || Date.now().toString(),
       uri: `${req.protocol}://${req.get('host')}/uploads/photos/${req.file.filename}`,
       name: name || req.file.originalname,
       type: type || 'Photo Autre',
-      timestamp: new Date(),
+      timestamp: savedTimestamp,
       buildingId,
+      idImmeuble: savedIdImmeuble,
+      gpsLatitude: savedGpsLatitude,
+      gpsLongitude: savedGpsLongitude,
       filePath: req.file.path,
-      fileSize: req.file.size,
-      mimeType: req.file.mimetype
+      fileSize: updatedFileStats.size,
+      mimeType: 'image/jpeg'
     });
 
     res.status(201).json({ 

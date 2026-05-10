@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { techniciansApi, Technician } from '@/api';
+import { apiDataField, apiListField } from '@/api/client';
 
 const TECHNICIANS_KEY = 'technicians';
 
@@ -8,7 +9,7 @@ export const useTechnicians = (options?: { status?: string; role?: string }) => 
     queryKey: [TECHNICIANS_KEY, options],
     queryFn: async () => {
       const response = await techniciansApi.getAll(options);
-      return response.data?.data || [];
+      return apiListField(response);
     },
   });
 };
@@ -18,7 +19,7 @@ export const useTechnician = (id: string) => {
     queryKey: [TECHNICIANS_KEY, id],
     queryFn: async () => {
       const response = await techniciansApi.getById(id);
-      return response.data;
+      return apiDataField(response);
     },
     enabled: !!id,
   });

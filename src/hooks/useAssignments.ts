@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { assignmentsApi, Assignment } from '@/api';
+import { apiListField } from '@/api/client';
 
 const ASSIGNMENTS_KEY = 'assignments';
 
@@ -8,7 +9,7 @@ export const useAssignments = (options?: { technicianId?: string; status?: strin
     queryKey: [ASSIGNMENTS_KEY, options],
     queryFn: async () => {
       const response = await assignmentsApi.getAll(options);
-      return response.data?.data || [];
+      return apiListField(response);
     },
   });
 };
@@ -18,7 +19,7 @@ export const useBuildingAssignments = (buildingId: string) => {
     queryKey: [ASSIGNMENTS_KEY, 'building', buildingId],
     queryFn: async () => {
       const response = await assignmentsApi.getByBuilding(buildingId);
-      return response.data?.data || [];
+      return apiListField(response);
     },
     enabled: !!buildingId,
   });
@@ -29,7 +30,7 @@ export const useTechnicianAssignments = (technicianId: string) => {
     queryKey: [ASSIGNMENTS_KEY, 'technician', technicianId],
     queryFn: async () => {
       const response = await assignmentsApi.getByTechnician(technicianId);
-      return response.data || [];
+      return apiListField(response);
     },
     enabled: !!technicianId,
   });

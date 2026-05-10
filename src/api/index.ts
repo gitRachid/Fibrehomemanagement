@@ -6,3 +6,7 @@ export { syncApi, type PendingChange, type SyncResponse } from './sync';
 export { photosApi } from './photos';
 export { authApi } from './auth';
 export { itemsApi, type Item } from './items';
+export { buildingStatusesApi, type BuildingStatus } from './buildingStatuses';
+export { routeOptiqueApi, type RouteOptiqueImportResult, type RouteOptiqueRow } from './routeOptique';
+export { technicalDossiersApi } from './technicalDossiers';
+export { kmzApi, type KmzCoordinate, type KmzFeature, type KmzImportFile, type KmzImportResult } from './kmz';

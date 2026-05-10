@@ -1,4 +1,9 @@
+/**
+ * Canonical offline path: persistent queue + `SyncService` replay against REST CRUD.
+ * Use `syncApi` only for explicit legacy `/sync` tooling, not mixed with this queue.
+ */
 import { Assignment, assignmentsApi, Building, buildingsApi, Technician, techniciansApi } from '@/api';
+import { apiListField } from '@/api/client';
 import { QueueManager } from './queueManager';
 import { SyncService } from './syncService';
 
@@ -194,7 +199,7 @@ class DataService {
       const response = serviceId
         ? await buildingsApi.getByService(serviceId, options?.status || 'active')
         : await buildingsApi.getAll(options);
-      const data = response.data?.data ?? [];
+      const data = apiListField(response);
       await this.setCache(cacheKey, data, CACHE_TTL_MS.buildings);
       return data;
     } catch (error) {
@@ -241,7 +246,7 @@ class DataService {
 
     try {
       const response = await techniciansApi.getAll(options);
-      const data = response.data?.data ?? [];
+      const data = apiListField(response);
       await this.setCache(cacheKey, data, CACHE_TTL_MS.technicians);
       return data;
     } catch (error) {
@@ -261,7 +266,7 @@ class DataService {
 
     try {
       const response = await assignmentsApi.getByBuilding(buildingId);
-      const data = response.data?.data ?? [];
+      const data = apiListField(response);
       await this.setCache(cacheKey, data, CACHE_TTL_MS.assignments);
       return data;
     } catch (error) {

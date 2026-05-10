@@ -8,26 +8,32 @@
     "dev": "nodemon server.js",
     "worker": "node worker.js",
     "test": "jest --passWithNoTests",
-    "smoke": "node -e \"require('./models'); console.log('backend smoke ok')\""
+    "smoke": "node -e \"require('./models'); console.log('backend smoke ok')\"",
+    "photos:regenerate": "node scripts/regenerate-photo-metadata.js"
   },
   "dependencies": {
+    "bcryptjs": "^2.4.3",
     "compression": "^1.8.1",
-    "express": "^4.18.2",
-    "express-rate-limit": "^7.5.1",
-    "mongoose": "^8.0.0",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
-    "hpp": "^0.2.3",
-    "multer": "^1.4.5-lts.1",
-    "helmet": "^7.1.0",
-    "morgan": "^1.10.0",
+    "express": "^4.18.2",
+    "express-rate-limit": "^7.5.1",
     "express-validator": "^7.0.1",
-    "bcryptjs": "^2.4.3",
-    "jsonwebtoken": "^9.0.2"
+    "fast-xml-parser": "^5.7.3",
+    "helmet": "^7.1.0",
+    "hpp": "^0.2.3",
+    "jsonwebtoken": "^9.0.2",
+    "jszip": "^3.10.1",
+    "mongoose": "^8.0.0",
+    "morgan": "^1.10.0",
+    "multer": "^1.4.5-lts.1",
+    "sharp": "^0.34.5",
+    "xlsx": "^0.18.5",
+    "xlsx-populate": "^1.21.0"
   },
   "devDependencies": {
-    "nodemon": "^3.0.1",
-    "jest": "^29.7.0"
+    "jest": "^29.7.0",
+    "nodemon": "^3.0.1"
   },
   "keywords": [
     "fiber",

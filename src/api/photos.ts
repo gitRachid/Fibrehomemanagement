@@ -1,4 +1,4 @@
-import { API_BASE_URL } from './client';
+import { apiClient, postFormData } from './client';
 
 export interface Photo {
   _id?: string;
@@ -8,6 +8,9 @@ export interface Photo {
   type: string;
   timestamp: Date;
   buildingId?: string;
+  idImmeuble?: string;
+  gpsLatitude?: string;
+  gpsLongitude?: string;
   fileSize?: number;
   mimeType?: string;
 }
@@ -21,8 +24,7 @@ export interface PhotosResponse {
 export const photosApi = {
   // Get photos for a building
   getByBuilding: async (buildingId: string) => {
-    const response = await fetch(`${API_BASE_URL}/photos/building/${buildingId}`);
-    return response.json();
+    return apiClient.get<PhotosResponse>(`/photos/building/${buildingId}`);
   },
 
   // Upload single photo
@@ -33,17 +35,15 @@ export const photosApi = {
     formData.append('name', photo.name);
     formData.append('type', photo.type);
     formData.append('timestamp', photo.timestamp.toISOString());
-    
+    if (photo.idImmeuble) formData.append('idImmeuble', photo.idImmeuble);
+    if (photo.gpsLatitude) formData.append('gpsLatitude', photo.gpsLatitude);
+    if (photo.gpsLongitude) formData.append('gpsLongitude', photo.gpsLongitude);
+
     if (fileBlob) {
       formData.append('photo', fileBlob, photo.name);
     }
 
-    const response = await fetch(`${API_BASE_URL}/photos/upload`, {
-      method: 'POST',
-      body: formData,
-    });
-
-    return response.json();
+    return postFormData<PhotosResponse & { message?: string }>('/photos/upload', formData);
   },
 
   // Upload photo from React Native
@@ -54,6 +54,9 @@ export const photosApi = {
     formData.append('name', photo.name);
     formData.append('type', photo.type);
     formData.append('timestamp', photo.timestamp.toISOString());
+    if (photo.idImmeuble) formData.append('idImmeuble', photo.idImmeuble);
+    if (photo.gpsLatitude) formData.append('gpsLatitude', photo.gpsLatitude);
+    if (photo.gpsLongitude) formData.append('gpsLongitude', photo.gpsLongitude);
 
     if (photo.uri) {
       formData.append('photo', {
@@ -63,25 +66,16 @@ export const photosApi = {
       } as any);
     }
 
-    const response = await fetch(`${API_BASE_URL}/photos/upload`, {
-      method: 'POST',
-      body: formData,
-    });
-
-    return response.json();
+    return postFormData<PhotosResponse & { message?: string }>('/photos/upload', formData);
   },
 
   // Delete photo
   delete: async (id: string) => {
-    const response = await fetch(`${API_BASE_URL}/photos/${id}`, {
-      method: 'DELETE',
-    });
-    return response.json();
+    return apiClient.delete<{ success: boolean; message?: string }>(`/photos/${id}`);
   },
 
   // Get single photo
   getById: async (id: string) => {
-    const response = await fetch(`${API_BASE_URL}/photos/${id}`);
-    return response.json();
+    return apiClient.get<{ success: boolean; data?: Photo }>(`/photos/${id}`);
   },
 };

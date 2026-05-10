@@ -5,6 +5,7 @@ export interface Building {
   idImmeuble: string;
   idImmeubleSysteme: string;
   ville: string;
+  zone?: string;
   codePostal: string;
   longitude: string;
   latitude: string;
@@ -63,6 +64,7 @@ export const buildingsApi = {
   getAll: async (params?: {
     serviceId?: string;
     status?: string;
+    zone?: string;
     ville?: string;
     search?: string;
     page?: number;
@@ -74,7 +76,7 @@ export const buildingsApi = {
 
   // Get single building
   getById: async (id: string) => {
-    return apiClient.get<Building>(`/buildings/${id}`);
+    return apiClient.get<{ success: boolean; data: Building }>(`/buildings/${id}`);
   },
 
   // Get buildings by service

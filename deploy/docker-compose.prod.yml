@@ -64,8 +64,6 @@ services:
     container_name: fiber-mongodb
     restart: unless-stopped
     command: ["--bind_ip_all", "--replSet", "rs0"]
-    ports:
-      - "27017:27017"
     volumes:
       - mongo_data:/data/db
     networks:

@@ -50,6 +50,10 @@ if (apiRequireAuth) {
   app.use('/api/sync', requireAuth, require('./routes/sync'));
   app.use('/api/photos', requireAuth, require('./routes/photos'));
   app.use('/api/items', requireAuth, require('./routes/items'));
+  app.use('/api/building-statuses', requireAuth, require('./routes/buildingStatuses'));
+  app.use('/api/route-optique', requireAuth, require('./routes/routeOptique'));
+  app.use('/api/technical-dossiers', requireAuth, require('./routes/technicalDossiers'));
+  app.use('/api/kmz', requireAuth, require('./routes/kmz'));
 } else {
   app.use('/api/buildings', require('./routes/buildings'));
   app.use('/api/technicians', require('./routes/technicians'));
@@ -57,6 +61,10 @@ if (apiRequireAuth) {
   app.use('/api/sync', require('./routes/sync'));
   app.use('/api/photos', require('./routes/photos'));
   app.use('/api/items', require('./routes/items'));
+  app.use('/api/building-statuses', require('./routes/buildingStatuses'));
+  app.use('/api/route-optique', require('./routes/routeOptique'));
+  app.use('/api/technical-dossiers', require('./routes/technicalDossiers'));
+  app.use('/api/kmz', require('./routes/kmz'));
 }
 
 // Health check endpoint

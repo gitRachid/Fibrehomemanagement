@@ -9,6 +9,7 @@ router.get('/', async (req, res) => {
     const { 
       serviceId, 
       status = 'active', 
+      zone,
       ville, 
       page = 1, 
       limit = 50,
@@ -21,7 +22,8 @@ router.get('/', async (req, res) => {
     let query = {};
     
     if (serviceId) query.serviceId = serviceId;
-    if (status) query.status = status;
+    if (status && status !== 'all') query.status = status;
+    if (zone) query.zone = zone;
     if (ville) query.ville = new RegExp(ville, 'i');
     if (search) {
       query.$or = [

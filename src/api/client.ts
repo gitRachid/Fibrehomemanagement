@@ -30,6 +30,11 @@ export const registerTokenGetter = (getter: () => Promise<string | null>) => {
   getToken = getter;
 };
 
+export const getAuthHeaders = async (): Promise<Record<string, string>> => {
+  const token = getToken ? await getToken() : null;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+};
+
 const buildUrl = (endpoint: string, params?: QueryParams) => {
   const url = new URL(`${API_BASE_URL}${endpoint}`);
   if (params) {
@@ -42,7 +47,19 @@ const buildUrl = (endpoint: string, params?: QueryParams) => {
   return url.toString();
 };
 
-const request = async <T>(endpoint: string, init: RequestInit = {}, params?: QueryParams): Promise<{ data: T }> => {
+const getErrorMessage = (payload: unknown, status: number): string => {
+  const body = payload as { message?: string; errors?: Array<{ msg?: string; message?: string; param?: string; path?: string }> };
+  if (body?.message) return body.message;
+  if (Array.isArray(body?.errors) && body.errors.length > 0) {
+    return body.errors
+      .map((error) => error.msg || error.message || error.param || error.path)
+      .filter(Boolean)
+      .join(', ');
+  }
+  return `HTTP ${status}`;
+};
+
+const request = async <T>(endpoint: string, init: RequestInit = {}, params?: QueryParams): Promise<T> => {
   const token = getToken ? await getToken() : null;
   const response = await fetch(buildUrl(endpoint, params), {
     ...init,
@@ -53,9 +70,41 @@ const request = async <T>(endpoint: string, init: RequestInit = {}, params?: Que
     },
   });
 
-  const payload = await response.json().catch(() => ({}));
+  const payload = (await response.json().catch(() => ({}))) as T;
   if (!response.ok) {
-    throw new ApiError(payload?.message || `HTTP ${response.status}`, response.status, payload?.code);
+    const err = payload as { message?: string; code?: string };
+    throw new ApiError(getErrorMessage(payload, response.status), response.status, err?.code);
+  }
+
+  return payload;
+};
+
+/** Backend list endpoints: `{ success, data: T[] }` — returns the array only. */
+export function apiListField<T>(body: { data?: T[] } | null | undefined): T[] {
+  const list = body?.data;
+  return Array.isArray(list) ? list : [];
+}
+
+/** Backend detail/create envelopes: `{ success, data: T }`. */
+export function apiDataField<T>(body: { data?: T } | null | undefined): T | undefined {
+  return body?.data;
+}
+
+/** Multipart POST with Bearer auth; do not set Content-Type (boundary required). */
+export const postFormData = async <T>(endpoint: string, formData: FormData): Promise<T> => {
+  const token = getToken ? await getToken() : null;
+  const response = await fetch(buildUrl(endpoint), {
+    method: 'POST',
+    body: formData,
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
+
+  const payload = (await response.json().catch(() => ({}))) as T;
+  if (!response.ok) {
+    const err = payload as { message?: string; code?: string };
+    throw new ApiError(getErrorMessage(payload, response.status), response.status, err?.code);
   }
 
   return payload;

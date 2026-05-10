@@ -7,8 +7,7 @@ export const useSyncStatus = (lastSync?: string) => {
   return useQuery({
     queryKey: [SYNC_KEY, 'status', lastSync],
     queryFn: async () => {
-      const response = await syncApi.getStatus(lastSync);
-      return response.data;
+      return syncApi.getStatus(lastSync);
     },
   });
 };
@@ -26,8 +25,7 @@ export const useSync = () => {
       deviceId: string; 
       lastSync?: string;
     }) => {
-      const response = await syncApi.sync(pendingChanges, deviceId, lastSync);
-      return response.data;
+      return syncApi.sync(pendingChanges, deviceId, lastSync);
     },
     onSuccess: () => {
       // Invalidate all data queries to refresh with synced data

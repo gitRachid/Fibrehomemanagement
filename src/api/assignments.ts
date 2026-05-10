@@ -32,7 +32,9 @@ export const assignmentsApi = {
 
   // Get assignments for a technician
   getByTechnician: async (technicianId: string) => {
-    return apiClient.get<string[]>(`/assignments/technician/${technicianId}`);
+    return apiClient.get<{ success: boolean; count: number; data: string[] }>(
+      `/assignments/technician/${technicianId}`,
+    );
   },
 
   // Create assignment

@@ -8,7 +8,7 @@ router.get('/', async (req, res) => {
     const { status = 'active', role } = req.query;
     let query = {};
     
-    if (status) query.status = status;
+    if (status && status !== 'all') query.status = status;
     if (role) query.role = role;
 
     const technicians = await Technician.find(query)

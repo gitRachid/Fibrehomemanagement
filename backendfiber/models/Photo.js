@@ -16,8 +16,8 @@ const photoSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['Photo Adduction', 'Photo Immeuble', 'Photo Façade', 'Photo Entrée', 'Photo Technique', 'Photo Autre'],
-    required: true
+    required: true,
+    trim: true
   },
   timestamp: {
     type: Date,
@@ -27,6 +27,18 @@ const photoSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Building',
     required: true
+  },
+  idImmeuble: {
+    type: String,
+    default: ''
+  },
+  gpsLatitude: {
+    type: String,
+    default: ''
+  },
+  gpsLongitude: {
+    type: String,
+    default: ''
   },
   filePath: {
     type: String,

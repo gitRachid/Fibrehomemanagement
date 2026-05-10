@@ -1,3 +1,7 @@
+/**
+ * Legacy batch sync (`POST /sync`). Prefer `dataService` + queue replay (`syncService`)
+ * for offline/outbox flows until a single protocol is finalized.
+ */
 import { apiClient } from './client';
 import { Building } from './buildings';
 import { Assignment } from './assignments';

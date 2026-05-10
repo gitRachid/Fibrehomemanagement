@@ -28,21 +28,21 @@ export const techniciansApi = {
 
   // Get single technician
   getById: async (id: string) => {
-    return apiClient.get<Technician>(`/technicians/${id}`);
+    return apiClient.get<{ success: boolean; data: Technician }>(`/technicians/${id}`);
   },
 
   // Create technician
   create: async (technician: Omit<Technician, '_id'>) => {
-    return apiClient.post<Technician>('/technicians', technician);
+    return apiClient.post<{ success: boolean; data: Technician }>('/technicians', technician);
   },
 
   // Update technician
   update: async (id: string, technician: Partial<Technician>) => {
-    return apiClient.put<Technician>(`/technicians/${id}`, technician);
+    return apiClient.put<{ success: boolean; data: Technician }>(`/technicians/${id}`, technician);
   },
 
   // Delete/deactivate technician
   delete: async (id: string) => {
-    return apiClient.delete<Technician>(`/technicians/${id}`);
+    return apiClient.delete<{ success: boolean; message: string }>(`/technicians/${id}`);
   },
 };

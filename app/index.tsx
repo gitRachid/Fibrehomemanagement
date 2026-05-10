@@ -13,7 +13,7 @@ export default function SignInScreen() {
   const [errors, setErrors] = useState<{ email?: string; password?: string; generic?: string }>({});
   const [submitting, setSubmitting] = useState(false);
 
-  if (isAuthenticated) return <Redirect href="/(app)/dashboard" />;
+  if (isAuthenticated) return <Redirect href="/(app)/selection" />;
 
   const validate = () => {
     const nextErrors: typeof errors = {};
@@ -29,10 +29,10 @@ export default function SignInScreen() {
     setErrors({});
     try {
       const response = await authApi.login(email.trim().toLowerCase(), password);
-      const token = response.data?.data?.token;
+      const token = response.data?.token;
       if (!token) throw new Error('No token returned by API');
       await login(token);
-      router.replace('/(app)/dashboard');
+      router.replace('/(app)/selection');
     } catch (error: any) {
       setErrors({ generic: error?.message || 'Authentication failed. Verify your credentials.' });
     } finally {

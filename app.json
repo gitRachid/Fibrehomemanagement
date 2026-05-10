@@ -25,7 +25,8 @@
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.telcabo.fiberhomemanage"
     },
     "web": {
       "favicon": "./assets/favicon.png",
@@ -34,6 +35,12 @@
     "plugins": [
       "expo-router",
       "expo-secure-store"
-    ]
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "ccc4cfa9-2f55-4c03-b883-ddb3f47438c6"
+      }
+    }
   }
 }

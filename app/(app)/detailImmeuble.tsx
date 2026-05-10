@@ -1,32 +1,76 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, TextInput, ActivityIndicator, Platform, Alert, Modal, Image, Dimensions } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, TextInput, ActivityIndicator, Platform, Alert, Modal, Image, Dimensions, PanResponder } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useColorScheme } from 'react-native';
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
+import * as FileSystem from 'expo-file-system/legacy';
 import { GestureHandlerRootView, PanGestureHandler, State } from 'react-native-gesture-handler';
 import NetInfo from '@react-native-community/netinfo';
-import { useBuilding, useUpdateBuilding } from '@/hooks';
+import { useBuilding, useBuildingStatuses, useCreateBuildingStatus, useDeleteBuildingStatus, useUpdateBuilding } from '@/hooks';
 import { dataService } from '@/services/dataService';
-import type { Building, Photo as ApiPhoto } from '@/api';
+import { buildingsApi, photosApi, technicalDossiersApi, type Building } from '@/api';
+import type { BuildingStatus } from '@/api';
+import { saveFileWithPicker } from '@/utils/saveFileWithPicker';
 
 // Local Photo interface
 interface Photo {
+  _id?: string;
   id: string;
   uri: string;
   name: string;
   type: string;
   timestamp: Date;
+  idImmeuble?: string;
+  gpsLatitude?: string;
+  gpsLongitude?: string;
+  mimeType?: string;
 }
 
 
 const photoTypes = [
-  'Photo Adduction',
-  'Photo Immeuble',
   'Photo Façade',
+  'Photo Immeuble',
   'Photo Entrée',
-  'Photo Technique',
+  'Photo Adduction',
+  'Plan des infrastructures',
+  'PLAN DE SITUATION',
+  'PLAN DE CHEMINEMENT',
+  'EMPLACEMENT BPO1',
+  'EMPLACEMENT BPO2',
+  'SITUATION-CHAMBRE BPE',
+  'BPE OUVERTE',
+  'Fixation BPE',
+  'Ettiqutage CHA',
+  'Ettiqtage PBO1 CHA',
+  'Ettiqtage PBO2 CHA',
+  'POSE PBO1',
+  'POSE PBO2',
+  'POSE PBO3',
+  'POSE PBO4',
   'Photo Autre'
+];
+
+const photoTypeColors = [
+  '#2563eb',
+  '#16a34a',
+  '#f97316',
+  '#7c3aed',
+  '#0891b2',
+  '#db2777',
+  '#ca8a04',
+  '#dc2626',
+  '#059669',
+  '#4f46e5',
+  '#9333ea',
+  '#0d9488',
+  '#ea580c',
+  '#0284c7',
+  '#65a30d',
+  '#be123c',
+  '#475569',
+  '#0f766e',
+  '#334155',
 ];
 
 const buildingFields: (keyof Building)[] = [
@@ -65,6 +109,7 @@ const fieldLabels: Record<keyof Omit<Building, 'photos'>, string> = {
   idImmeuble: 'ID Immeuble',
   idImmeubleSysteme: 'ID Immeuble Système',
   ville: 'Ville',
+  zone: 'Zone',
   codePostal: 'Code Postal',
   longitude: 'Longitude',
   latitude: 'Latitude',
@@ -97,8 +142,23 @@ const fieldLabels: Record<keyof Omit<Building, 'photos'>, string> = {
   updatedAt: 'Updated At'
 };
 
+const DEFAULT_STATUS_OPTIONS: BuildingStatus[] = [
+  { value: 'active', label: 'Actif', color: '#16a34a' },
+  { value: 'pending', label: 'En attente', color: '#f59e0b' },
+  { value: 'archived', label: 'Archivé', color: '#dc2626' },
+  { value: 'inactive', label: 'Inactif', color: '#64748b' },
+];
+const LOCAL_BUILDING_STATUSES_KEY = 'local_building_statuses_v1';
+const getBuildingPhotosKey = (id: string) => `building_photos_${id}`;
+
 export default function DetailImmeubleScreen() {
-  const { buildingId, buildingName, itemId } = useLocalSearchParams<{ buildingId: string; buildingName: string; itemId: string }>();
+  const { buildingId, buildingName, itemId, zone, itemName } = useLocalSearchParams<{
+    buildingId: string;
+    buildingName: string;
+    itemId?: string;
+    zone?: string;
+    itemName?: string;
+  }>();
   const router = useRouter();
   console.log("je suis dans detail")
   const colorScheme = useColorScheme();
@@ -113,6 +173,7 @@ export default function DetailImmeubleScreen() {
   const [selectedBuildingIndex, setSelectedBuildingIndex] = useState<number | null>(null);
   const [selectedPhotoType, setSelectedPhotoType] = useState(photoTypes[0]);
   const [showPhotoSourceModal, setShowPhotoSourceModal] = useState(false);
+  const [showPhotoTypeDropdown, setShowPhotoTypeDropdown] = useState(false);
   const [photoSource, setPhotoSource] = useState<'camera' | 'gallery'>('camera');
   const [locationPermission, setLocationPermission] = useState<boolean | null>(null);
   const [showPhotoPreview, setShowPhotoPreview] = useState(false);
@@ -124,7 +185,83 @@ export default function DetailImmeubleScreen() {
   const [isOnline, setIsOnline] = useState(true);
   const [syncStatus, setSyncStatus] = useState<'synced' | 'pending' | 'syncing' | 'error'>('synced');
   const [pendingChanges, setPendingChanges] = useState<any[]>([]);
+  const [showBuildingMenu, setShowBuildingMenu] = useState(false);
+  const [isExportingTechnicalDossier, setIsExportingTechnicalDossier] = useState(false);
+  const [showStatusDropdown, setShowStatusDropdown] = useState(false);
+  const [showAddStatusModal, setShowAddStatusModal] = useState(false);
+  const [newStatusLabel, setNewStatusLabel] = useState('');
+  const [newStatusManagerOnly, setNewStatusManagerOnly] = useState(false);
+  const [localStatusOptions, setLocalStatusOptions] = useState<BuildingStatus[]>([]);
   const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
+  const currentUserRole = 'manager';
+  const photoScaleRef = useRef(photoScale);
+  const photoOffsetRef = useRef(photoOffset);
+  const photoPanStartRef = useRef({ x: 0, y: 0 });
+
+  const { data: statusOptions = [] } = useBuildingStatuses();
+  const mergedStatusOptions = Array.from(
+    [...DEFAULT_STATUS_OPTIONS, ...statusOptions, ...localStatusOptions]
+      .reduce((map, status) => map.set(status.value, status), new Map<string, BuildingStatus>())
+      .values(),
+  );
+  const visibleStatusOptions = mergedStatusOptions.filter((status) => !status.managerOnly || currentUserRole === 'manager');
+  const createStatusMutation = useCreateBuildingStatus();
+  const deleteStatusMutation = useDeleteBuildingStatus();
+
+  useEffect(() => {
+    photoScaleRef.current = photoScale;
+  }, [photoScale]);
+
+  useEffect(() => {
+    photoOffsetRef.current = photoOffset;
+  }, [photoOffset]);
+
+  const clampPhotoOffset = (offset: { x: number; y: number }, scale = photoScaleRef.current) => {
+    const maxX = Math.max(0, screenWidth * (scale - 1) * 0.65);
+    const maxY = Math.max(0, screenHeight * (scale - 1) * 0.45);
+    return {
+      x: Math.max(-maxX, Math.min(maxX, offset.x)),
+      y: Math.max(-maxY, Math.min(maxY, offset.y)),
+    };
+  };
+
+  const updatePhotoScale = (nextScale: number) => {
+    const boundedScale = Math.max(1, Math.min(3, nextScale));
+    setPhotoScale(boundedScale);
+    photoScaleRef.current = boundedScale;
+
+    if (boundedScale === 1) {
+      const centeredOffset = { x: 0, y: 0 };
+      photoOffsetRef.current = centeredOffset;
+      setPhotoOffset(centeredOffset);
+      return;
+    }
+
+    const nextOffset = clampPhotoOffset(photoOffsetRef.current, boundedScale);
+    photoOffsetRef.current = nextOffset;
+    setPhotoOffset(nextOffset);
+  };
+
+  const photoPanResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => photoScaleRef.current > 1,
+      onMoveShouldSetPanResponder: (_, gestureState) =>
+        photoScaleRef.current > 1 &&
+        (Math.abs(gestureState.dx) > 2 || Math.abs(gestureState.dy) > 2),
+      onPanResponderGrant: () => {
+        photoPanStartRef.current = photoOffsetRef.current;
+      },
+      onPanResponderMove: (_, gestureState) => {
+        if (photoScaleRef.current <= 1) return;
+        const nextOffset = clampPhotoOffset({
+          x: photoPanStartRef.current.x + gestureState.dx,
+          y: photoPanStartRef.current.y + gestureState.dy,
+        });
+        photoOffsetRef.current = nextOffset;
+        setPhotoOffset(nextOffset);
+      },
+    }),
+  ).current;
 
   // Use dataService for offline storage
   const saveToLocalStorage = async (key: string, data: any) => {
@@ -195,6 +332,10 @@ export default function DetailImmeubleScreen() {
         setPendingChanges(savedPending as any[]);
         setSyncStatus('pending');
       }
+      const savedLocalStatuses = await loadFromLocalStorage(LOCAL_BUILDING_STATUSES_KEY);
+      if (Array.isArray(savedLocalStatuses)) {
+        setLocalStatusOptions(savedLocalStatuses as BuildingStatus[]);
+      }
     };
     
     loadSavedData();
@@ -216,13 +357,92 @@ export default function DetailImmeubleScreen() {
 
   // Sync API building data to local state
   useEffect(() => {
-    if (apiBuilding) {
-      setBuildingsData([apiBuilding]);
+    const mergeApiBuildingWithLocalPhotos = async () => {
+      if (!apiBuilding) return;
+
+      const key = apiBuilding._id || apiBuilding.idImmeuble || buildingId;
+      const savedPhotos = key ? await loadFromLocalStorage(getBuildingPhotosKey(String(key))) : [];
+      const localPhotos = Array.isArray(savedPhotos) ? savedPhotos as Photo[] : [];
+      const apiPhotos = Array.isArray((apiBuilding as any).photos) ? (apiBuilding as any).photos as Photo[] : [];
+      const mergedPhotos = Array.from(
+        [...apiPhotos, ...localPhotos]
+          .reduce((map, photo) => map.set(photo._id || photo.id || photo.uri, photo), new Map<string, Photo>())
+          .values(),
+      );
+
+      setBuildingsData([{ ...apiBuilding, photos: mergedPhotos }]);
+    };
+
+    void mergeApiBuildingWithLocalPhotos();
+  }, [apiBuilding, buildingId]);
+
+  const persistBuildingPhotos = async (building: Partial<Building>) => {
+    const key = building._id || building.idImmeuble || buildingId;
+    if (!key) return;
+    await saveToLocalStorage(getBuildingPhotosKey(String(key)), building.photos || []);
+  };
+
+  const addPhotoToBuilding = async (buildingIndex: number, photo: Photo) => {
+    let nextBuilding: Partial<Building> | null = null;
+    setBuildingsData(prev => {
+      const next = [...prev];
+      if (next[buildingIndex]) {
+        next[buildingIndex] = {
+          ...next[buildingIndex],
+          photos: [...(next[buildingIndex].photos || []), photo]
+        };
+        nextBuilding = next[buildingIndex];
+      }
+      return next;
+    });
+
+    const current = buildingsData[buildingIndex];
+    await persistBuildingPhotos({
+      ...(current || {}),
+      photos: [...((current?.photos || []) as any), photo],
+    });
+  };
+
+  const replacePhotoForBuilding = async (buildingIndex: number, photoId: string, uploaded: any) => {
+    const uploadedWithFreshUri = uploaded?.uri
+      ? { ...uploaded, uri: `${uploaded.uri}${uploaded.uri.includes('?') ? '&' : '?'}v=${Date.now()}` }
+      : uploaded;
+    let updatedBuilding: Partial<Building> | null = null;
+    setBuildingsData(prev => {
+      const next = [...prev];
+      if (next[buildingIndex]?.photos) {
+        next[buildingIndex] = {
+          ...next[buildingIndex],
+          photos: next[buildingIndex].photos?.map((photo: any) =>
+            photo.id === photoId ? { ...photo, ...uploadedWithFreshUri, timestamp: new Date(uploaded.timestamp) } : photo,
+          ),
+        };
+        updatedBuilding = next[buildingIndex];
+      }
+      return next;
+    });
+
+    if (updatedBuilding) {
+      await persistBuildingPhotos(updatedBuilding);
     }
-  }, [apiBuilding]);
+  };
 
   const handleBack = () => {
-    router.back();
+    router.replace({
+      pathname: '/(app)/infoImmeuble',
+      params: {
+        itemId: itemId || '',
+        zone: zone || '',
+        itemName: itemName || zone || '',
+      },
+    });
+  };
+
+  const handleSwipeBack = (event: any) => {
+    const { state, translationX, translationY } = event.nativeEvent;
+    if (state === State.END && translationX > 90 && Math.abs(translationY) < 80) {
+      handleBack();
+    }
   };
 
   const handleSave = async () => {
@@ -230,6 +450,7 @@ export default function DetailImmeubleScreen() {
     
     if (buildingsData.length > 0 && buildingsData[0]._id) {
       try {
+        await uploadPendingPhotos(buildingsData[0]);
         await updateBuildingMutation.mutateAsync({
           id: buildingsData[0]._id,
           data: buildingsData[0]
@@ -242,6 +463,196 @@ export default function DetailImmeubleScreen() {
       }
     } else {
       Alert.alert('Erreur', 'Aucun immeuble à sauvegarder');
+    }
+  };
+
+  const uploadPendingPhotos = async (building: Partial<Building>) => {
+    const buildingDbId = building._id;
+    const photos = (building.photos || []) as Photo[];
+    if (!buildingDbId || photos.length === 0) return;
+
+    const uploadedPhotos: Photo[] = [];
+    for (const photo of photos) {
+      if (photo._id || !photo.uri?.startsWith('file:')) {
+        uploadedPhotos.push(photo);
+        continue;
+      }
+
+      console.log('[PHOTO_UPLOAD] uploading pending photo', {
+        buildingId: buildingDbId,
+        photoId: photo.id,
+        type: photo.type,
+        uri: photo.uri,
+      });
+      const response = await photosApi.uploadMobile(buildingDbId, {
+        ...photo,
+        timestamp: photo.timestamp instanceof Date ? photo.timestamp : new Date(photo.timestamp),
+      });
+      const uploaded = Array.isArray(response.data) ? response.data[0] : response.data;
+      uploadedPhotos.push({
+        ...photo,
+        ...(uploaded || {}),
+        timestamp: uploaded?.timestamp ? new Date(uploaded.timestamp) : photo.timestamp,
+      } as Photo);
+    }
+
+    setBuildingsData((previous) => {
+      const next = [...previous];
+      if (next[0]?._id === buildingDbId) {
+        next[0] = { ...next[0], photos: uploadedPhotos as any };
+      }
+      return next;
+    });
+    await persistBuildingPhotos({ ...building, photos: uploadedPhotos as any });
+  };
+
+  const handleStatusChange = async (status: string) => {
+    const current = buildingsData[0];
+    if (!current) return;
+
+    const updated = { ...current, status };
+    setBuildingsData([updated]);
+    setShowStatusDropdown(false);
+
+    if (updated._id) {
+      try {
+        setSyncStatus('syncing');
+        await updateBuildingMutation.mutateAsync({
+          id: updated._id,
+          data: { status },
+        });
+        setSyncStatus('synced');
+      } catch (error) {
+        setSyncStatus('pending');
+        await dataService.saveBuilding(updated as any);
+      }
+    }
+  };
+
+  const addStatus = async () => {
+    const label = newStatusLabel.trim();
+    if (!label) {
+      Alert.alert('État', 'Veuillez saisir le nom de l’état.');
+      return;
+    }
+
+    const localValue = label
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '');
+
+    const localStatus: BuildingStatus = {
+      value: localValue,
+      label,
+      color: '#64748b',
+      managerOnly: newStatusManagerOnly,
+    };
+    const nextLocalStatuses = [
+      ...localStatusOptions.filter((status) => status.value !== localStatus.value),
+      localStatus,
+    ];
+    setLocalStatusOptions(nextLocalStatuses);
+    await saveToLocalStorage(LOCAL_BUILDING_STATUSES_KEY, nextLocalStatuses);
+    setNewStatusLabel('');
+    setNewStatusManagerOnly(false);
+    setShowAddStatusModal(false);
+    await handleStatusChange(localStatus.value);
+
+    try {
+      const response = await createStatusMutation.mutateAsync({ label, managerOnly: newStatusManagerOnly });
+      const created = response.data;
+      if (created?.value && created.value !== localStatus.value) {
+        const syncedLocalStatuses = nextLocalStatuses.filter((status) => status.value !== localStatus.value);
+        setLocalStatusOptions(syncedLocalStatuses);
+        await saveToLocalStorage(LOCAL_BUILDING_STATUSES_KEY, syncedLocalStatuses);
+        await handleStatusChange(created.value);
+      }
+    } catch (error: any) {
+      Alert.alert('État ajouté localement', 'Le backend doit être redémarré pour enregistrer cet état dans la base.');
+    }
+  };
+
+  const deleteStatus = (value: string, label: string) => {
+    Alert.alert('Supprimer l’état', `Supprimer "${label}" ?`, [
+      { text: 'Annuler', style: 'cancel' },
+      {
+        text: 'Supprimer',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            const nextLocalStatuses = localStatusOptions.filter((status) => status.value !== value);
+            setLocalStatusOptions(nextLocalStatuses);
+            await saveToLocalStorage(LOCAL_BUILDING_STATUSES_KEY, nextLocalStatuses);
+            await deleteStatusMutation.mutateAsync(value);
+            if (buildingsData[0]?.status === value) await handleStatusChange('active');
+          } catch (error: any) {
+            Alert.alert('Erreur', error?.message || 'Impossible de supprimer cet état.');
+          }
+        },
+      },
+    ]);
+  };
+
+  const archiveCurrentBuilding = () => {
+    const building = buildingsData[0];
+    const id = building?._id || building?.idImmeuble;
+    if (!id) {
+      Alert.alert('Erreur', 'Aucun immeuble à archiver');
+      return;
+    }
+
+    Alert.alert('Archiver', `Archiver l’immeuble ${building.idImmeuble || buildingName} ?`, [
+      { text: 'Annuler', style: 'cancel' },
+      {
+        text: 'Archiver',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await buildingsApi.archive(id);
+            setShowBuildingMenu(false);
+            Alert.alert('Archivé', 'L’immeuble a été archivé.', [
+              { text: 'OK', onPress: () => router.back() },
+            ]);
+          } catch (error: any) {
+            Alert.alert('Erreur', error?.message || 'Impossible d’archiver cet immeuble.');
+          }
+        },
+      },
+    ]);
+  };
+
+  const exportTechnicalDossier = async () => {
+    const building = buildingsData[0];
+    const id = building?._id || building?.idImmeuble || buildingId;
+
+    setShowBuildingMenu(false);
+    if (!id) {
+      Alert.alert('Erreur', 'Aucun immeuble sélectionné pour exporter le dossier technique.');
+      return;
+    }
+
+    setIsExportingTechnicalDossier(true);
+    try {
+      if (building?._id) {
+        await uploadPendingPhotos(building);
+      }
+      const request = await technicalDossiersApi.getDownloadRequest(String(id), building?.idImmeuble || buildingName);
+      const targetUri = `${FileSystem.documentDirectory}${request.fileName}`;
+      const result = await FileSystem.downloadAsync(request.url, targetUri, {
+        headers: request.headers,
+      });
+      const savedUri = await saveFileWithPicker(result.uri, request.fileName);
+
+      Alert.alert(
+        'Dossier technique exporté',
+        `Fichier généré : ${request.fileName}\n\nEmplacement : ${savedUri}`,
+      );
+    } catch (error: any) {
+      Alert.alert('Erreur', error?.message || 'Impossible d’exporter le dossier technique.');
+    } finally {
+      setIsExportingTechnicalDossier(false);
     }
   };
 
@@ -287,17 +698,68 @@ export default function DetailImmeubleScreen() {
     setShowPhotoSourceModal(false);
     setSelectedBuildingIndex(null);
     setSelectedPhotoType(photoTypes[0]);
+    setShowPhotoTypeDropdown(false);
   };
 
   const closePhotoModal = () => {
     setShowPhotoModal(false);
     setSelectedBuildingIndex(null);
     setSelectedPhotoType(photoTypes[0]);
+    setShowPhotoTypeDropdown(false);
+  };
+
+  const formatPhotoTimestamp = (timestamp?: Date | string) => {
+    if (!timestamp) return 'Date: -';
+    const value = timestamp instanceof Date ? timestamp : new Date(timestamp);
+    if (Number.isNaN(value.getTime())) return 'Date: -';
+    return `Date: ${value.toLocaleString('fr-FR')}`;
+  };
+
+  const getPhotoBuildingId = (photo: Partial<Photo>, building?: Partial<Building>) => {
+    return photo.idImmeuble || building?.idImmeuble || building?.idImmeubleSysteme || building?._id || '-';
+  };
+
+  const getPhotoGpsLabel = (photo: Partial<Photo>) => {
+    const latitude = photo.gpsLatitude;
+    const longitude = photo.gpsLongitude;
+    if (!latitude || !longitude) return 'GPS: -';
+    return `GPS: ${latitude}, ${longitude}`;
+  };
+
+  const getPhotoMetadata = (
+    buildingIndex: number,
+    gps?: { latitude: number; longitude: number } | null,
+    options: { useBuildingGpsFallback?: boolean } = {},
+  ) => {
+    const building = buildingsData[buildingIndex];
+    const useBuildingGpsFallback = options.useBuildingGpsFallback ?? false;
+    return {
+      idImmeuble: String(building?.idImmeuble || building?.idImmeubleSysteme || building?._id || ''),
+      gpsLatitude: String(gps?.latitude ?? (useBuildingGpsFallback ? building?.latitude : '') ?? ''),
+      gpsLongitude: String(gps?.longitude ?? (useBuildingGpsFallback ? building?.longitude : '') ?? ''),
+    };
+  };
+
+  const getCurrentGpsForPhoto = async (): Promise<{ latitude: number; longitude: number } | null> => {
+    try {
+      const hasPermission = await requestLocationPermission();
+      if (!hasPermission) return null;
+      const location = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.High,
+      });
+      return {
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+      };
+    } catch {
+      return null;
+    }
   };
 
   const openPhotoTypeSelection = (source: 'camera' | 'gallery') => {
     setPhotoSource(source);
     setShowPhotoSourceModal(false);
+    setShowPhotoTypeDropdown(false);
     setShowPhotoModal(true);
   };
 
@@ -311,30 +773,37 @@ export default function DetailImmeubleScreen() {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
         allowsEditing: true,
-        aspect: [4, 3],
         quality: 0.8,
       });
 
       if (!result.canceled && result.assets && result.assets[0]) {
+        const metadata = selectedBuildingIndex !== null
+          ? getPhotoMetadata(selectedBuildingIndex, null, { useBuildingGpsFallback: false })
+          : {};
         const newPhoto: Photo = {
           id: Date.now().toString(),
           uri: result.assets[0].uri,
-          name: `${selectedPhotoType}_${Date.now()}`,
+          name: `${selectedPhotoType}_${Date.now()}.jpg`,
           type: selectedPhotoType,
           timestamp: new Date(),
+          mimeType: result.assets[0].mimeType || 'image/jpeg',
+          ...metadata,
         };
 
         if (selectedBuildingIndex !== null) {
-          setBuildingsData(prev => {
-            const newData = [...prev];
-            if (newData[selectedBuildingIndex]) {
-              newData[selectedBuildingIndex] = {
-                ...newData[selectedBuildingIndex],
-                photos: [...(newData[selectedBuildingIndex].photos || []), newPhoto]
-              };
+          await addPhotoToBuilding(selectedBuildingIndex, newPhoto);
+          const buildingDbId = buildingsData[selectedBuildingIndex]?._id;
+          if (buildingDbId) {
+            try {
+              const response = await photosApi.uploadMobile(buildingDbId, newPhoto);
+              const uploaded = Array.isArray(response.data) ? response.data[0] : response.data;
+              if (uploaded) {
+                await replacePhotoForBuilding(selectedBuildingIndex, newPhoto.id, uploaded);
+              }
+            } catch (error) {
+              console.error('[PHOTO_UPLOAD] gallery upload failed', error);
             }
-            return newData;
-          });
+          }
         }
 
         closePhotoModal();
@@ -358,28 +827,40 @@ export default function DetailImmeubleScreen() {
       const result = await ImagePicker.launchCameraAsync({
         mediaTypes: ['images'],
         allowsEditing: true,
-        aspect: [4, 3],
+        exif: true,
         quality: 0.8,
       });
 
       if (!result.canceled && result.assets && result.assets[0]) {
+        // Read GPS immediately after capture; do not fall back to building GPS for taken photos.
+        const gps = await getCurrentGpsForPhoto();
+        const metadata = selectedBuildingIndex !== null
+          ? getPhotoMetadata(selectedBuildingIndex, gps, { useBuildingGpsFallback: false })
+          : {};
         const newPhoto: Photo = {
           id: Date.now().toString(),
           uri: result.assets[0].uri,
-          name: `${selectedPhotoType}_${Date.now()}`,
+          name: `${selectedPhotoType}_${Date.now()}.jpg`,
           type: selectedPhotoType,
           timestamp: new Date(),
+          mimeType: result.assets[0].mimeType || 'image/jpeg',
+          ...metadata,
         };
 
         if (selectedBuildingIndex !== null) {
-          setBuildingsData(prev => {
-            const newData = [...prev];
-            newData[selectedBuildingIndex] = {
-              ...newData[selectedBuildingIndex],
-              photos: [...(newData[selectedBuildingIndex].photos || []), newPhoto]
-            };
-            return newData;
-          });
+          await addPhotoToBuilding(selectedBuildingIndex, newPhoto);
+          const buildingDbId = buildingsData[selectedBuildingIndex]?._id;
+          if (buildingDbId) {
+            try {
+              const response = await photosApi.uploadMobile(buildingDbId, newPhoto);
+              const uploaded = Array.isArray(response.data) ? response.data[0] : response.data;
+              if (uploaded) {
+                await replacePhotoForBuilding(selectedBuildingIndex, newPhoto.id, uploaded);
+              }
+            } catch (error) {
+              console.error('[PHOTO_UPLOAD] camera upload failed', error);
+            }
+          }
         }
 
         closePhotoModal();
@@ -405,6 +886,53 @@ export default function DetailImmeubleScreen() {
     setPhotoOffset({ x: 0, y: 0 });
   };
 
+  const getSafePhotoFileName = (photo: Photo) => {
+    const rawName = photo.name || `${photo.type || 'photo'}_${Date.now()}.jpg`;
+    const withoutQuery = rawName.split('?')[0];
+    const safeName = withoutQuery.replace(/[\\/:*?"<>|]/g, '_');
+    return /\.(jpg|jpeg|png|gif)$/i.test(safeName) ? safeName : `${safeName}.jpg`;
+  };
+
+  const downloadPhoto = async (photo: Photo | null) => {
+    if (!photo?.uri) {
+      Alert.alert('Erreur', 'Aucune photo à télécharger.');
+      return;
+    }
+
+    try {
+      const fileName = getSafePhotoFileName(photo);
+      const sourceUri = photo.uri.startsWith('http')
+        ? (await FileSystem.downloadAsync(photo.uri, `${FileSystem.cacheDirectory}${fileName}`)).uri
+        : photo.uri;
+
+      if (Platform.OS === 'android') {
+        const permissions = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+        if (!permissions.granted) {
+          Alert.alert('Téléchargement annulé', `Photo disponible ici : ${sourceUri}`);
+          return;
+        }
+
+        const base64Content = await FileSystem.readAsStringAsync(sourceUri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        const destinationUri = await FileSystem.StorageAccessFramework.createFileAsync(
+          permissions.directoryUri,
+          fileName,
+          photo.mimeType || 'image/jpeg',
+        );
+        await FileSystem.writeAsStringAsync(destinationUri, base64Content, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        Alert.alert('Photo téléchargée', `Fichier enregistré : ${fileName}`);
+        return;
+      }
+
+      Alert.alert('Photo téléchargée', `Photo disponible ici : ${sourceUri}`);
+    } catch (error: any) {
+      Alert.alert('Erreur', error?.message || 'Impossible de télécharger la photo.');
+    }
+  };
+
   const togglePhotoSelection = (photoId: string) => {
     if (isSelectionMode) {
       setSelectedPhotos(prev => 
@@ -420,47 +948,63 @@ export default function DetailImmeubleScreen() {
     setSelectedPhotos([]);
   };
 
+  const deletePhotoRecords = async (photos: Photo[]) => {
+    await Promise.allSettled(
+      photos
+        .map((photo) => photo._id || photo.id)
+        .filter(Boolean)
+        .map((id) => photosApi.delete(String(id))),
+    );
+  };
+
+  const removePhotosFromBuilding = async (buildingIndex: number, photoIds: string[]) => {
+    const currentBuilding = buildingsData[buildingIndex];
+    const currentPhotos = ((currentBuilding?.photos || []) as Photo[]);
+    const removedPhotos = currentPhotos.filter((photo) => photoIds.includes(photo.id));
+    const remainingPhotos = currentPhotos.filter((photo) => !photoIds.includes(photo.id));
+
+    await deletePhotoRecords(removedPhotos);
+
+    const updatedBuilding = {
+      ...(currentBuilding || {}),
+      photos: remainingPhotos as any,
+    };
+
+    setBuildingsData(prev => {
+      const newData = [...prev];
+      if (newData[buildingIndex]) {
+        newData[buildingIndex] = updatedBuilding;
+      }
+      return newData;
+    });
+
+    await persistBuildingPhotos(updatedBuilding);
+  };
+
   const deleteSelectedPhotos = (buildingIndex: number) => {
     if (selectedPhotos.length === 0) return;
+    const idsToDelete = [...selectedPhotos];
     
     Alert.alert(
       'Supprimer les photos',
-      `Voulez-vous supprimer ${selectedPhotos.length} photo(s) sélectionnée(s)?`,
+      `Voulez-vous supprimer ${idsToDelete.length} photo(s) sélectionnée(s)?`,
       [
         { text: 'Annuler', style: 'cancel' },
         {
           text: 'Supprimer',
           style: 'destructive',
-          onPress: () => {
-            setBuildingsData(prev => {
-              const newData = [...prev];
-              if (newData[buildingIndex] && newData[buildingIndex].photos) {
-                newData[buildingIndex] = {
-                  ...newData[buildingIndex],
-                  photos: newData[buildingIndex].photos.filter(p => !selectedPhotos.includes(p.id))
-                };
-              }
-              return newData;
-            });
+          onPress: async () => {
+            await removePhotosFromBuilding(buildingIndex, idsToDelete);
             setSelectedPhotos([]);
-            Alert.alert('Photos supprimées', `${selectedPhotos.length} photo(s) supprimée(s) avec succès`);
+            Alert.alert('Photos supprimées', `${idsToDelete.length} photo(s) supprimée(s) avec succès`);
           }
         }
       ]
     );
   };
 
-  const deletePhoto = (buildingIndex: number, photoId: string) => {
-    setBuildingsData(prev => {
-      const newData = [...prev];
-      if (newData[buildingIndex] && newData[buildingIndex].photos) {
-        newData[buildingIndex] = {
-          ...newData[buildingIndex],
-          photos: newData[buildingIndex].photos.filter((p: ApiPhoto) => p.id !== photoId)
-        };
-      }
-      return newData;
-    });
+  const deletePhoto = async (buildingIndex: number, photoId: string) => {
+    await removePhotosFromBuilding(buildingIndex, [photoId]);
     Alert.alert('Photo supprimée', 'La photo a été supprimée avec succès');
   };
 
@@ -521,9 +1065,9 @@ export default function DetailImmeubleScreen() {
           </View>
         </View>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.photoGallery}>
-          {photos.map((photo) => (
+          {photos.map((photo, photoIndex) => (
             <TouchableOpacity 
-              key={photo.id} 
+              key={`${photo._id || photo.id || photo.uri || photo.name}-${photoIndex}`}
               style={[
                 styles.photoItem,
                 selectedPhotos.includes(photo.id) && styles.selectedPhotoItem
@@ -542,8 +1086,8 @@ export default function DetailImmeubleScreen() {
                 }
               }}
             >
-              <Image 
-                source={{ uri: photo.uri }} 
+              <Image
+                source={{ uri: photo.uri }}
                 style={styles.photoThumbnail}
                 resizeMode="cover"
               />
@@ -561,6 +1105,17 @@ export default function DetailImmeubleScreen() {
               )}
               <Text style={[styles.photoType, { color: isDark ? '#ccc' : '#666' }]}>{photo.type}</Text>
               <Text style={[styles.photoName, { color: isDark ? '#fff' : '#000' }]}>{photo.name}</Text>
+              <View style={styles.photoMetaBox}>
+                <Text style={[styles.photoMetaText, { color: isDark ? '#d1d5db' : '#334155' }]}>
+                  {formatPhotoTimestamp(photo.timestamp)}
+                </Text>
+                <Text style={[styles.photoMetaText, { color: isDark ? '#d1d5db' : '#334155' }]}>
+                  ID: {getPhotoBuildingId(photo, building)}
+                </Text>
+                <Text style={[styles.photoMetaText, { color: isDark ? '#d1d5db' : '#334155' }]}>
+                  {getPhotoGpsLabel(photo)}
+                </Text>
+              </View>
             </TouchableOpacity>
           ))}
         </ScrollView>
@@ -738,6 +1293,8 @@ export default function DetailImmeubleScreen() {
   }
 
   return (
+    <GestureHandlerRootView style={{ flex: 1 }}>
+    <PanGestureHandler onHandlerStateChange={handleSwipeBack} activeOffsetX={30}>
     <View style={[styles.container, { backgroundColor: isDark ? '#000' : '#fff' }]}>
       <View style={styles.header}>
         <TouchableOpacity onPress={handleBack} style={styles.backButton}>
@@ -746,7 +1303,170 @@ export default function DetailImmeubleScreen() {
         <Text style={[styles.headerTitle, { color: isDark ? '#fff' : '#000' }]}>
           Détails Immeuble - {buildingName}
         </Text>
+        <TouchableOpacity
+          onPress={() => setShowBuildingMenu(true)}
+          style={styles.headerMenuButton}
+        >
+          <Text style={[styles.headerMenuText, { color: isDark ? '#fff' : '#334155' }]}>⋮</Text>
+        </TouchableOpacity>
       </View>
+
+      <View style={styles.statusSelectorContainer}>
+        <Text style={[styles.statusSelectorLabel, { color: isDark ? '#ccc' : '#64748b' }]}>État</Text>
+        <TouchableOpacity
+          onPress={() => setShowStatusDropdown((current) => !current)}
+          style={[styles.statusSelectorButton, { backgroundColor: isDark ? '#1f2937' : '#fff', borderColor: isDark ? '#374151' : '#cbd5e1' }]}
+        >
+          <Text style={[styles.statusSelectorText, { color: visibleStatusOptions.find((option) => option.value === buildingsData[0]?.status)?.color || '#16a34a' }]}>
+            {visibleStatusOptions.find((option) => option.value === buildingsData[0]?.status)?.label || 'Actif'}
+          </Text>
+          <Text style={[styles.statusSelectorArrow, { color: isDark ? '#fff' : '#334155' }]}>
+            {showStatusDropdown ? '▲' : '▼'}
+          </Text>
+        </TouchableOpacity>
+        {currentUserRole === 'manager' ? (
+          <TouchableOpacity
+            onPress={() => {
+              setShowStatusDropdown(false);
+              setShowAddStatusModal(true);
+            }}
+            style={styles.statusAddButtonAlways}
+          >
+            <Text style={styles.statusAddText}>+ Ajouter état</Text>
+          </TouchableOpacity>
+        ) : null}
+        {showStatusDropdown ? (
+          <View style={[styles.statusDropdown, { backgroundColor: isDark ? '#1f2937' : '#fff', borderColor: isDark ? '#374151' : '#cbd5e1' }]}>
+            {visibleStatusOptions.map((option) => (
+              <View key={option.value} style={styles.statusDropdownRow}>
+                <TouchableOpacity
+                  onPress={() => handleStatusChange(option.value)}
+                  style={styles.statusDropdownItem}
+                >
+                  <Text style={[styles.statusDropdownText, { color: option.color }]}>
+                    {option.label}{option.managerOnly ? ' (manager)' : ''}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => deleteStatus(option.value, option.label)}
+                  style={styles.statusDeleteButton}
+                >
+                  <Text style={styles.statusDeleteText}>Supprimer</Text>
+                </TouchableOpacity>
+              </View>
+            ))}
+            <TouchableOpacity
+              onPress={() => {
+                setShowStatusDropdown(false);
+                setShowAddStatusModal(true);
+              }}
+              style={styles.statusAddButton}
+            >
+              <Text style={styles.statusAddText}>+ Ajouter un état</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
+      </View>
+
+      <Modal visible={showAddStatusModal} transparent animationType="fade" onRequestClose={() => setShowAddStatusModal(false)}>
+        <View style={styles.menuOverlay}>
+          <View style={[styles.buildingMenu, { backgroundColor: isDark ? '#1f2937' : '#fff' }]}>
+            <Text style={[styles.buildingMenuTitle, { color: isDark ? '#fff' : '#0f172a' }]}>Ajouter un état</Text>
+            <TextInput
+              value={newStatusLabel}
+              onChangeText={setNewStatusLabel}
+              placeholder="Nom de l'état"
+              placeholderTextColor={isDark ? '#9ca3af' : '#64748b'}
+              style={[styles.statusInput, { color: isDark ? '#fff' : '#0f172a', borderColor: isDark ? '#374151' : '#cbd5e1' }]}
+            />
+            <TouchableOpacity
+              onPress={() => setNewStatusManagerOnly((current) => !current)}
+              style={styles.managerOnlyToggle}
+            >
+              <Text style={[styles.managerOnlyCheckbox, { backgroundColor: newStatusManagerOnly ? '#2563eb' : 'transparent' }]}>
+                {newStatusManagerOnly ? '✓' : ''}
+              </Text>
+              <Text style={[styles.managerOnlyText, { color: isDark ? '#fff' : '#0f172a' }]}>
+                Visible manager seul
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={addStatus} style={[styles.buildingMenuAction, { backgroundColor: '#2563eb' }]}>
+              <Text style={styles.buildingMenuActionText}>Ajouter</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => {
+                setNewStatusLabel('');
+                setNewStatusManagerOnly(false);
+                setShowAddStatusModal(false);
+              }}
+              style={[styles.buildingMenuAction, { backgroundColor: isDark ? '#374151' : '#e2e8f0' }]}
+            >
+              <Text style={[styles.buildingMenuCloseText, { color: isDark ? '#fff' : '#0f172a' }]}>Annuler</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={showBuildingMenu} transparent animationType="fade" onRequestClose={() => setShowBuildingMenu(false)}>
+        <TouchableOpacity
+          activeOpacity={1}
+          onPress={() => setShowBuildingMenu(false)}
+          style={styles.menuOverlay}
+        >
+          <TouchableOpacity activeOpacity={1} style={[styles.buildingMenu, { backgroundColor: isDark ? '#1f2937' : '#fff' }]}>
+            <Text style={[styles.buildingMenuTitle, { color: isDark ? '#fff' : '#0f172a' }]}>
+              {buildingName || buildingsData[0]?.idImmeuble || 'Immeuble'}
+            </Text>
+            <TouchableOpacity
+              onPress={async () => {
+                setShowBuildingMenu(false);
+                await handleSave();
+              }}
+              style={[styles.buildingMenuAction, { backgroundColor: '#2563eb' }]}
+            >
+              <Text style={styles.buildingMenuActionText}>Enregistrer</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={exportTechnicalDossier}
+              disabled={isExportingTechnicalDossier}
+              style={[styles.buildingMenuAction, { backgroundColor: '#16a34a', opacity: isExportingTechnicalDossier ? 0.6 : 1 }]}
+            >
+              <Text style={styles.buildingMenuActionText}>
+                {isExportingTechnicalDossier ? 'Export en cours...' : 'Exporter dossier technique'}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => {
+                setShowBuildingMenu(false);
+                router.push({
+                  pathname: '/kmzMap',
+                  params: {
+                    zone: String(zone || buildingsData[0]?.zone || buildingsData[0]?.ville || ''),
+                    buildingName: String(buildingName || buildingsData[0]?.idImmeuble || ''),
+                    buildingLatitude: String(buildingsData[0]?.latitude || ''),
+                    buildingLongitude: String(buildingsData[0]?.longitude || ''),
+                  },
+                });
+              }}
+              style={[styles.buildingMenuAction, { backgroundColor: '#0f766e' }]}
+            >
+              <Text style={styles.buildingMenuActionText}>Afficher carte KMZ</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={archiveCurrentBuilding}
+              style={[styles.buildingMenuAction, { backgroundColor: '#dc2626' }]}
+            >
+              <Text style={styles.buildingMenuActionText}>Archiver cet immeuble</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => setShowBuildingMenu(false)}
+              style={[styles.buildingMenuAction, { backgroundColor: isDark ? '#374151' : '#e2e8f0' }]}
+            >
+              <Text style={[styles.buildingMenuCloseText, { color: isDark ? '#fff' : '#0f172a' }]}>Fermer</Text>
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
 
       {Platform.OS === 'web' ? (
         <>
@@ -771,31 +1491,71 @@ export default function DetailImmeubleScreen() {
             onRequestClose={closePhotoModal}
           >
             <View style={styles.modalOverlay}>
-              <View style={[styles.modalContent, { backgroundColor: isDark ? '#1a1a1a' : '#fff' }]}>
+              <View style={[styles.modalContent, styles.photoTypeModalContent, { backgroundColor: isDark ? '#1a1a1a' : '#fff' }]}>
                 <Text style={[styles.modalTitle, { color: isDark ? '#fff' : '#000' }]}>
                   Type de photo
                 </Text>
-                
-                <View style={styles.photoTypeButtons}>
-                  {photoTypes.map((type) => (
-                    <TouchableOpacity
-                      key={type}
-                      style={[
-                        styles.photoTypeButton,
-                        selectedPhotoType === type && styles.selectedPhotoTypeButton,
-                        { backgroundColor: selectedPhotoType === type ? '#007AFF' : (isDark ? '#333' : '#f0f0f0') }
-                      ]}
-                      onPress={() => setSelectedPhotoType(type)}
-                    >
-                      <Text style={[
-                        styles.photoTypeButtonText,
-                        { color: selectedPhotoType === type ? '#fff' : (isDark ? '#fff' : '#000') }
-                      ]}>
-                        {type}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
+
+                <TouchableOpacity
+                  style={[
+                    styles.photoTypeDropdownButton,
+                    {
+                      backgroundColor: isDark ? '#1f2937' : '#fff',
+                      borderColor: photoTypeColors[photoTypes.indexOf(selectedPhotoType) % photoTypeColors.length] || '#2563eb',
+                    },
+                  ]}
+                  onPress={() => setShowPhotoTypeDropdown((current) => !current)}
+                >
+                  <View style={[
+                    styles.photoTypeColorDot,
+                    { backgroundColor: photoTypeColors[photoTypes.indexOf(selectedPhotoType) % photoTypeColors.length] || '#2563eb' },
+                  ]} />
+                  <Text style={[styles.photoTypeDropdownText, { color: isDark ? '#fff' : '#0f172a' }]}>
+                    {selectedPhotoType}
+                  </Text>
+                  <Text style={[styles.photoTypeDropdownArrow, { color: isDark ? '#fff' : '#334155' }]}>
+                    {showPhotoTypeDropdown ? '▲' : '▼'}
+                  </Text>
+                </TouchableOpacity>
+
+                {showPhotoTypeDropdown ? (
+                  <View style={[styles.photoTypeDropdownList, { backgroundColor: isDark ? '#111827' : '#f8fafc' }]}>
+                    <ScrollView style={styles.photoTypeScroll} contentContainerStyle={styles.photoTypeButtons} nestedScrollEnabled>
+                    {photoTypes.map((type, typeIndex) => {
+                      const isSelected = selectedPhotoType === type;
+                      const typeColor = photoTypeColors[typeIndex % photoTypeColors.length];
+                      return (
+                        <TouchableOpacity
+                          key={type}
+                          style={[
+                            styles.photoTypeButton,
+                            isSelected && styles.selectedPhotoTypeButton,
+                            {
+                              backgroundColor: isSelected ? typeColor : (isDark ? '#1f2937' : '#fff'),
+                              borderColor: typeColor,
+                            }
+                          ]}
+                          onPress={() => {
+                            setSelectedPhotoType(type);
+                            setShowPhotoTypeDropdown(false);
+                          }}
+                        >
+                          <View style={[styles.photoTypeColorDot, { backgroundColor: isSelected ? '#fff' : typeColor }]} />
+                          <Text style={[
+                            styles.photoTypeButtonText,
+                            { color: isSelected ? '#fff' : (isDark ? '#fff' : '#0f172a') }
+                          ]}>
+                            {type}
+                          </Text>
+                          <Text style={[styles.photoTypeCheck, { color: isSelected ? '#fff' : typeColor }]}>
+                            {isSelected ? '✓' : '›'}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                    </ScrollView>
+                  </View>
+                ) : null}
 
                 <View style={styles.modalButtons}>
                   <TouchableOpacity
@@ -995,31 +1755,71 @@ export default function DetailImmeubleScreen() {
             onRequestClose={closePhotoModal}
           >
             <View style={styles.modalOverlay}>
-              <View style={[styles.modalContent, { backgroundColor: isDark ? '#1a1a1a' : '#fff' }]}>
+              <View style={[styles.modalContent, styles.photoTypeModalContent, { backgroundColor: isDark ? '#1a1a1a' : '#fff' }]}>
                 <Text style={[styles.modalTitle, { color: isDark ? '#fff' : '#000' }]}>
                   Type de photo
                 </Text>
-                
-                <View style={styles.photoTypeButtons}>
-                  {photoTypes.map((type) => (
-                    <TouchableOpacity
-                      key={type}
-                      style={[
-                        styles.photoTypeButton,
-                        selectedPhotoType === type && styles.selectedPhotoTypeButton,
-                        { backgroundColor: selectedPhotoType === type ? '#007AFF' : (isDark ? '#333' : '#f0f0f0') }
-                      ]}
-                      onPress={() => setSelectedPhotoType(type)}
-                    >
-                      <Text style={[
-                        styles.photoTypeButtonText,
-                        { color: selectedPhotoType === type ? '#fff' : (isDark ? '#fff' : '#000') }
-                      ]}>
-                        {type}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
+
+                <TouchableOpacity
+                  style={[
+                    styles.photoTypeDropdownButton,
+                    {
+                      backgroundColor: isDark ? '#1f2937' : '#fff',
+                      borderColor: photoTypeColors[photoTypes.indexOf(selectedPhotoType) % photoTypeColors.length] || '#2563eb',
+                    },
+                  ]}
+                  onPress={() => setShowPhotoTypeDropdown((current) => !current)}
+                >
+                  <View style={[
+                    styles.photoTypeColorDot,
+                    { backgroundColor: photoTypeColors[photoTypes.indexOf(selectedPhotoType) % photoTypeColors.length] || '#2563eb' },
+                  ]} />
+                  <Text style={[styles.photoTypeDropdownText, { color: isDark ? '#fff' : '#0f172a' }]}>
+                    {selectedPhotoType}
+                  </Text>
+                  <Text style={[styles.photoTypeDropdownArrow, { color: isDark ? '#fff' : '#334155' }]}>
+                    {showPhotoTypeDropdown ? '▲' : '▼'}
+                  </Text>
+                </TouchableOpacity>
+
+                {showPhotoTypeDropdown ? (
+                  <View style={[styles.photoTypeDropdownList, { backgroundColor: isDark ? '#111827' : '#f8fafc' }]}>
+                    <ScrollView style={styles.photoTypeScroll} contentContainerStyle={styles.photoTypeButtons} nestedScrollEnabled>
+                      {photoTypes.map((type, typeIndex) => {
+                        const isSelected = selectedPhotoType === type;
+                        const typeColor = photoTypeColors[typeIndex % photoTypeColors.length];
+                        return (
+                          <TouchableOpacity
+                            key={type}
+                            style={[
+                              styles.photoTypeButton,
+                              isSelected && styles.selectedPhotoTypeButton,
+                              {
+                                backgroundColor: isSelected ? typeColor : (isDark ? '#1f2937' : '#fff'),
+                                borderColor: typeColor,
+                              }
+                            ]}
+                            onPress={() => {
+                              setSelectedPhotoType(type);
+                              setShowPhotoTypeDropdown(false);
+                            }}
+                          >
+                            <View style={[styles.photoTypeColorDot, { backgroundColor: isSelected ? '#fff' : typeColor }]} />
+                            <Text style={[
+                              styles.photoTypeButtonText,
+                              { color: isSelected ? '#fff' : (isDark ? '#fff' : '#0f172a') }
+                            ]}>
+                              {type}
+                            </Text>
+                            <Text style={[styles.photoTypeCheck, { color: isSelected ? '#fff' : typeColor }]}>
+                              {isSelected ? '✓' : '›'}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </ScrollView>
+                  </View>
+                ) : null}
 
                 <View style={styles.modalButtons}>
                   <TouchableOpacity
@@ -1055,12 +1855,18 @@ export default function DetailImmeubleScreen() {
                   <Text style={styles.closePreviewText}>✕</Text>
                 </TouchableOpacity>
                 
-                <View style={styles.photoPreviewImageContainer}>
+                <View style={styles.photoPreviewImageContainer} {...photoPanResponder.panHandlers}>
                   <Image 
                     source={{ uri: selectedPhoto?.uri }} 
                     style={[
                       styles.photoPreviewImage,
-                      { transform: [{ scale: photoScale }] }
+                      {
+                        transform: [
+                          { translateX: photoOffset.x },
+                          { translateY: photoOffset.y },
+                          { scale: photoScale },
+                        ],
+                      }
                     ]}
                     resizeMode="contain"
                   />
@@ -1073,12 +1879,25 @@ export default function DetailImmeubleScreen() {
                   <Text style={[styles.photoPreviewName, { color: isDark ? '#ccc' : '#666' }]}>
                     {selectedPhoto?.name}
                   </Text>
+                  {selectedPhoto ? (
+                    <View style={[styles.photoPreviewMetaBox, { backgroundColor: isDark ? '#111827' : '#f1f5f9' }]}>
+                      <Text style={[styles.photoPreviewMetaText, { color: isDark ? '#e5e7eb' : '#334155' }]}>
+                        {formatPhotoTimestamp(selectedPhoto.timestamp)}
+                      </Text>
+                      <Text style={[styles.photoPreviewMetaText, { color: isDark ? '#e5e7eb' : '#334155' }]}>
+                        ID immeuble: {getPhotoBuildingId(selectedPhoto, firstBuilding)}
+                      </Text>
+                      <Text style={[styles.photoPreviewMetaText, { color: isDark ? '#e5e7eb' : '#334155' }]}>
+                        {getPhotoGpsLabel(selectedPhoto)}
+                      </Text>
+                    </View>
+                  ) : null}
                 </View>
                 
                 <View style={styles.photoPreviewControls}>
                   <TouchableOpacity 
                     style={[styles.zoomButton, { backgroundColor: isDark ? '#333' : '#f0f0f0' }]}
-                    onPress={() => setPhotoScale(Math.max(0.5, photoScale - 0.25))}
+                    onPress={() => updatePhotoScale(photoScale - 0.25)}
                   >
                     <Text style={[styles.zoomButtonText, { color: isDark ? '#fff' : '#000' }]}>−</Text>
                   </TouchableOpacity>
@@ -1087,11 +1906,17 @@ export default function DetailImmeubleScreen() {
                   </Text>
                   <TouchableOpacity 
                     style={[styles.zoomButton, { backgroundColor: isDark ? '#333' : '#f0f0f0' }]}
-                    onPress={() => setPhotoScale(Math.min(3, photoScale + 0.25))}
+                    onPress={() => updatePhotoScale(photoScale + 0.25)}
                   >
                     <Text style={[styles.zoomButtonText, { color: isDark ? '#fff' : '#000' }]}>+</Text>
                   </TouchableOpacity>
                 </View>
+                <TouchableOpacity
+                  style={styles.downloadPhotoButton}
+                  onPress={() => downloadPhoto(selectedPhoto)}
+                >
+                  <Text style={styles.downloadPhotoButtonText}>Télécharger la photo</Text>
+                </TouchableOpacity>
               </View>
             </View>
           </Modal>
@@ -1104,6 +1929,8 @@ export default function DetailImmeubleScreen() {
         </ScrollView>
       )}
     </View>
+    </PanGestureHandler>
+    </GestureHandlerRootView>
   );
 }
 
@@ -1130,6 +1957,146 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: 'bold',
     flex: 1,
+  },
+  headerMenuButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerMenuText: {
+    fontSize: 26,
+    fontWeight: '700',
+  },
+  statusSelectorContainer: {
+    paddingHorizontal: 20,
+    paddingBottom: 10,
+    zIndex: 20,
+  },
+  statusSelectorLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    marginBottom: 6,
+  },
+  statusSelectorButton: {
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  statusSelectorText: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  statusSelectorArrow: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  statusDropdown: {
+    borderRadius: 12,
+    borderWidth: 1,
+    marginTop: 6,
+    overflow: 'hidden',
+  },
+  statusDropdownRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e8f0',
+  },
+  statusDropdownItem: {
+    flex: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  statusDropdownText: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  statusDeleteButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+  },
+  statusDeleteText: {
+    color: '#dc2626',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  statusAddButton: {
+    paddingHorizontal: 14,
+    paddingVertical: 13,
+    backgroundColor: '#eff6ff',
+  },
+  statusAddButtonAlways: {
+    marginTop: 8,
+    borderRadius: 10,
+    backgroundColor: '#eff6ff',
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    alignItems: 'center',
+  },
+  statusAddText: {
+    color: '#2563eb',
+    fontWeight: '700',
+  },
+  statusInput: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  managerOnlyToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 8,
+  },
+  managerOnlyCheckbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#2563eb',
+    color: '#fff',
+    textAlign: 'center',
+    fontWeight: '700',
+    overflow: 'hidden',
+  },
+  managerOnlyText: {
+    fontWeight: '700',
+  },
+  menuOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
+    padding: 20,
+  },
+  buildingMenu: {
+    borderRadius: 16,
+    padding: 16,
+    gap: 10,
+  },
+  buildingMenuTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  buildingMenuAction: {
+    borderRadius: 10,
+    padding: 13,
+  },
+  buildingMenuActionText: {
+    color: '#fff',
+    fontWeight: '700',
+  },
+  buildingMenuCloseText: {
+    fontWeight: '700',
+    textAlign: 'center',
   },
   scrollView: {
     flex: 1,
@@ -1273,13 +2240,13 @@ const styles = StyleSheet.create({
     marginRight: 10,
     alignItems: 'center',
     backgroundColor: '#f5f5f5',
-    padding: 5,
-    borderRadius: 4,
-    minWidth: 80,
+    padding: 8,
+    borderRadius: 8,
+    width: 190,
   },
   photoThumbnail: {
-    width: 80,
-    height: 80,
+    width: 120,
+    height: 120,
     borderRadius: 4,
     marginBottom: 5,
   },
@@ -1353,6 +2320,18 @@ const styles = StyleSheet.create({
     fontSize: 10,
     textAlign: 'center',
   },
+  photoMetaBox: {
+    width: '100%',
+    marginTop: 6,
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+    gap: 2,
+  },
+  photoMetaText: {
+    fontSize: 10,
+    lineHeight: 14,
+  },
   addMorePhotosButton: {
     padding: 6,
     borderRadius: 4,
@@ -1376,28 +2355,88 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     padding: 20,
   },
+  photoTypeModalContent: {
+    width: '92%',
+    maxHeight: '72%',
+  },
   modalTitle: {
     fontSize: 18,
     fontWeight: 'bold',
-    marginBottom: 20,
+    marginBottom: 12,
     textAlign: 'center',
   },
+  photoTypeScroll: {
+    maxHeight: 220,
+  },
+  photoTypeDropdownList: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    padding: 8,
+    marginBottom: 12,
+    maxHeight: 240,
+    overflow: 'hidden',
+  },
+  photoTypeDropdownButton: {
+    minHeight: 54,
+    borderWidth: 1.5,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginBottom: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    shadowColor: '#000',
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
+  },
+  photoTypeDropdownText: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  photoTypeDropdownArrow: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
   photoTypeButtons: {
-    marginBottom: 20,
+    gap: 8,
+    paddingBottom: 4,
   },
   photoTypeButton: {
-    padding: 12,
-    borderRadius: 8,
-    marginBottom: 8,
+    minHeight: 42,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 10,
     alignItems: 'center',
+    flexDirection: 'row',
+    gap: 10,
+    borderWidth: 1.5,
+    shadowColor: '#000',
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
   },
   selectedPhotoTypeButton: {
     borderWidth: 2,
-    borderColor: '#007AFF',
   },
   photoTypeButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  photoTypeColorDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+  },
+  photoTypeCheck: {
+    fontSize: 18,
+    fontWeight: '800',
   },
   // Photo Source Selection styles
   photoSourceButtons: {
@@ -1493,6 +2532,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 20,
+    overflow: 'hidden',
   },
   photoPreviewImage: {
     width: '100%',
@@ -1510,11 +2550,36 @@ const styles = StyleSheet.create({
   photoPreviewName: {
     fontSize: 14,
   },
+  photoPreviewMetaBox: {
+    marginTop: 10,
+    width: '100%',
+    borderRadius: 10,
+    backgroundColor: '#f1f5f9',
+    padding: 10,
+    gap: 4,
+  },
+  photoPreviewMetaText: {
+    fontSize: 13,
+    textAlign: 'center',
+  },
   photoPreviewControls: {
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
     gap: 20,
+  },
+  downloadPhotoButton: {
+    marginTop: 14,
+    borderRadius: 10,
+    backgroundColor: '#16a34a',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+  },
+  downloadPhotoButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
   },
   zoomButton: {
     width: 40,

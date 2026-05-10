@@ -35,17 +35,17 @@ export const itemsApi = {
 
   // Get single item
   getById: async (id: string) => {
-    return apiClient.get<Item>(`/items/${id}`);
+    return apiClient.get<{ success: boolean; data: Item }>(`/items/${id}`);
   },
 
   // Create new item
   create: async (item: Omit<Item, '_id'>) => {
-    return apiClient.post<Item>('/items', item);
+    return apiClient.post<{ success: boolean; data: Item }>('/items', item);
   },
 
   // Update item
   update: async (id: string, item: Partial<Item>) => {
-    return apiClient.put<Item>(`/items/${id}`, item);
+    return apiClient.put<{ success: boolean; data: Item }>(`/items/${id}`, item);
   },
 
   // Archive item

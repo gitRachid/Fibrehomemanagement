@@ -2,9 +2,15 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, FlatList, StyleSheet, TouchableOpacity, ActivityIndicator, Modal, ScrollView, Alert, RefreshControl, TextInput } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useColorScheme } from 'react-native';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as XLSX from 'xlsx';
+import { useQueryClient } from '@tanstack/react-query';
+import { GestureHandlerRootView, PanGestureHandler, State } from 'react-native-gesture-handler';
 import { useBuildings, useTechnicians, useCreateAssignment, useBulkCreateAssignments } from '@/hooks';
 import { dataService } from '@/services/dataService';
-import { Building as ApiBuilding, Technician as ApiTechnician } from '@/api';
+import { Building as ApiBuilding, Technician as ApiTechnician, buildingsApi, technicalDossiersApi } from '@/api';
+import { saveFileWithPicker } from '@/utils/saveFileWithPicker';
 
 // Local Building interface mapped from API
 interface Building {
@@ -13,6 +19,9 @@ interface Building {
   name: string;
   address: string;
   serviceId: string;
+  zone?: string;
+  ville?: string;
+  status?: string;
   idImmeuble?: string;
   rueNomNom?: string;
   numeroNomImmeuble?: string;
@@ -36,15 +45,16 @@ interface ItemAssignment {
 }
 
 export default function InfoImmeubleScreen() {
-  const { itemId, itemName } = useLocalSearchParams<{ itemId: string; itemName: string }>();
+  const { itemId, itemName, zone, importExcel } = useLocalSearchParams<{ itemId?: string; itemName?: string; zone?: string; importExcel?: string }>();
   const router = useRouter();
+  const queryClient = useQueryClient();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
 
   // Debug logging
   useEffect(() => {
-    console.log('[INFO_IMMEUBLE] Params received:', { itemId, itemName });
-  }, [itemId, itemName]);
+    console.log('[INFO_IMMEUBLE] Params received:', { itemId, itemName, zone, importExcel });
+  }, [itemId, itemName, zone, importExcel]);
 
   // Role management state
   const [currentUser, setCurrentUser] = useState<User>({
@@ -66,20 +76,50 @@ export default function InfoImmeubleScreen() {
   const [assignmentMode, setAssignmentMode] = useState(false);
   const [isOnline, setIsOnline] = useState(true);
   const [syncStatus, setSyncStatus] = useState<'synced' | 'pending' | 'syncing'>('synced');
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importFilePath, setImportFilePath] = useState('');
+  const [isImporting, setIsImporting] = useState(false);
+  const [locallyImportedBuildings, setLocallyImportedBuildings] = useState<ApiBuilding[]>([]);
+  const [technicianFilter, setTechnicianFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [isExportingTechnicalDossier, setIsExportingTechnicalDossier] = useState(false);
 
-  const { data: apiBuildings, isLoading, refetch } = useBuildings(itemId, { status: 'active' });
+  const selectedZone = typeof zone === 'string' ? zone.trim() : '';
+  useEffect(() => {
+    if (importExcel === '1') setShowImportModal(true);
+  }, [importExcel]);
+  const backendStatusFilter = statusFilter === 'all' ? 'active' : statusFilter;
+  const { data: apiBuildings, isLoading, refetch } = useBuildings(selectedZone ? undefined : itemId, { status: backendStatusFilter });
+  const mergedBuildings = Array.from(
+    [...(apiBuildings ?? []), ...locallyImportedBuildings]
+      .reduce((map, building) => map.set(building.idImmeuble, building), new Map<string, ApiBuilding>())
+      .values(),
+  );
+  const visibleBuildings = selectedZone
+    ? mergedBuildings.filter((b: ApiBuilding) => String(b.zone ?? '').trim() === selectedZone)
+    : mergedBuildings;
   
   // Map API buildings to local format
-  const data: Building[] | undefined = apiBuildings?.map((b: ApiBuilding) => ({
+  const data: Building[] | undefined = visibleBuildings?.map((b: ApiBuilding) => ({
     id: b._id || b.idImmeuble,
     _id: b._id,
     name: `${b.idImmeuble} - ${b.rueNomNom} ${b.numeroNomImmeuble}`,
     address: `${b.rueNomNom}, ${b.codePostal} ${b.ville}`,
     serviceId: b.serviceId,
+    zone: b.zone,
+    ville: b.ville,
+    status: b.status,
     idImmeuble: b.idImmeuble,
     rueNomNom: b.rueNomNom,
     numeroNomImmeuble: b.numeroNomImmeuble,
   }));
+  const filteredData = data?.filter((building) => {
+    const matchesStatus = statusFilter === 'all' || building.status === statusFilter;
+    const matchesTechnician =
+      technicianFilter === 'all' ||
+      buildingAssignments.some((assignment) => assignment.itemId === building.id && assignment.technicianIds.includes(technicianFilter));
+    return matchesStatus && matchesTechnician;
+  });
 
   // Load saved assignments from local storage
   useEffect(() => {
@@ -130,6 +170,234 @@ export default function InfoImmeubleScreen() {
     }
   };
 
+  const normalizeHeader = (value: string): string => value.trim().replace(/\s+/g, ' ').toLowerCase();
+
+  const handlePickExcelFile = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: [
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          'application/vnd.ms-excel',
+          'application/vnd.ms-excel.sheet.macroEnabled.12',
+        ],
+        copyToCacheDirectory: true,
+      });
+
+      if (!result.canceled && result.assets?.length) {
+        setImportFilePath(result.assets[0].uri);
+      }
+    } catch {
+      Alert.alert('Erreur', 'Impossible de sélectionner le fichier Excel');
+    }
+  };
+
+  const handleImportBuildings = async () => {
+    if (!importFilePath) {
+      Alert.alert('Erreur', 'Veuillez sélectionner un fichier Excel');
+      return;
+    }
+
+    setIsImporting(true);
+    try {
+      const fileContent = await FileSystem.readAsStringAsync(importFilePath, { encoding: 'base64' });
+      const workbook = XLSX.read(fileContent, { type: 'base64' });
+      const firstSheetName = workbook.SheetNames[0];
+      const worksheet = workbook.Sheets[firstSheetName];
+      const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as unknown[][];
+
+      if (rows.length < 2) {
+        Alert.alert('Erreur', 'Le fichier Excel est vide ou invalide');
+        return;
+      }
+
+      const headers = (rows[0] as unknown[]).map((header) => String(header ?? '').trim());
+      const serviceId = itemId || 'service_unique';
+      const zoneName = selectedZone || itemName || '';
+      const buildings = rows.slice(1).map((row, index) => {
+        const building: any = {
+          serviceId,
+          status: 'active',
+          __row: index + 2,
+        };
+        let floorIndex = 0;
+
+        headers.forEach((header, columnIndex) => {
+          const value = row[columnIndex] !== undefined && row[columnIndex] !== null ? String(row[columnIndex]).trim() : '';
+          const normalized = normalizeHeader(header);
+
+          switch (normalized) {
+            case 'id immeuble':
+            case 'id_immeuble':
+              building.idImmeuble = value;
+              break;
+            case 'id immeuble système':
+            case 'id immeuble systeme':
+            case 'id_immeuble systeme':
+              building.idImmeubleSysteme = value;
+              break;
+            case 'ville':
+              building.ville = value;
+              break;
+            case 'code postal':
+              building.codePostal = value;
+              break;
+            case 'longitude':
+            case 'lonngitude':
+              building.longitude = value;
+              break;
+            case 'latitude':
+              building.latitude = value;
+              break;
+            case 'rue non.& nonm':
+              building.rueNomNom = value;
+              break;
+            case 'n°/nonm immeuble':
+              building.numeroNomImmeuble = value;
+              break;
+            case 'utilisation immeuble':
+              building.utilisationImmeuble = value;
+              break;
+            case 'nbre etages':
+              building.nbreEtages = value;
+              break;
+            case 'sous sol':
+              building.sousSol = value;
+              break;
+            case 'sous sol-commun':
+              building.sousSolCommun = value;
+              break;
+            case 'solution de raccordement':
+              building.solutionRaccordement = value;
+              break;
+            case 'nbr b2b':
+              building.nbrB2B = value;
+              break;
+            case 'nbr b2c':
+              building.nbrB2C = value;
+              break;
+            case 'total clients':
+              building.totalClients = value;
+              break;
+            case 'chemin de fibre':
+            case 'pbo1':
+              if (!building.cheminFibrePBO1) building.cheminFibrePBO1 = value;
+              break;
+            case 'floor':
+              if (floorIndex === 0) building.floorPBO1 = value;
+              else building.floorPBO2 = value;
+              floorIndex++;
+              break;
+            case 'type pbo1':
+              building.typePBO1 = value;
+              break;
+            case 'pbo2':
+              building.PBO2 = value;
+              break;
+            case 'type pbo2':
+              building.typePBO2 = value;
+              break;
+            case 'syndic':
+              building.syndic = value;
+              break;
+            case 'num syndic':
+              building.numSyndic = value;
+              break;
+            case 'remarques':
+              building.remarques = value;
+              break;
+            case 'typologie habitat':
+              building.typologieHabitat = value;
+              break;
+            case 'verticalité':
+            case 'verticalite':
+              building.verticalite = value;
+              break;
+            case 'csp':
+              building.csp = value;
+              break;
+          }
+        });
+
+        building.idImmeubleSysteme = building.idImmeubleSysteme || building.idImmeuble;
+        building.zone = zoneName;
+        building.ville = building.ville || zoneName;
+
+        return {
+          idImmeuble: building.idImmeuble || '',
+          idImmeubleSysteme: building.idImmeubleSysteme || '',
+          ville: building.ville || '',
+          zone: building.zone || '',
+          codePostal: building.codePostal || '00000',
+          longitude: building.longitude || '',
+          latitude: building.latitude || '',
+          rueNomNom: building.rueNomNom || '',
+          numeroNomImmeuble: building.numeroNomImmeuble || '',
+          utilisationImmeuble: building.utilisationImmeuble || '',
+          nbreEtages: building.nbreEtages || '',
+          sousSol: building.sousSol || '',
+          sousSolCommun: building.sousSolCommun || '',
+          solutionRaccordement: building.solutionRaccordement || '',
+          nbrB2B: building.nbrB2B || '',
+          nbrB2C: building.nbrB2C || '',
+          totalClients: building.totalClients || '',
+          cheminFibrePBO1: building.cheminFibrePBO1 || '',
+          floorPBO1: building.floorPBO1 || '',
+          typePBO1: building.typePBO1 || '',
+          PBO2: building.PBO2 || '',
+          floorPBO2: building.floorPBO2 || '',
+          typePBO2: building.typePBO2 || '',
+          syndic: building.syndic || '',
+          numSyndic: building.numSyndic || '',
+          remarques: building.remarques || '',
+          typologieHabitat: building.typologieHabitat || '',
+          verticalite: building.verticalite || '',
+          csp: building.csp || '',
+          serviceId,
+          status: 'active',
+          __row: building.__row,
+        };
+      }).filter((building) => building.idImmeuble && building.idImmeubleSysteme && building.ville && building.rueNomNom && building.numeroNomImmeuble);
+
+      if (buildings.length === 0) {
+        Alert.alert('Erreur', 'Aucun immeuble valide trouvé dans le fichier');
+        return;
+      }
+
+      let successCount = 0;
+      const errors: string[] = [];
+      const importedNow: ApiBuilding[] = [];
+      for (const building of buildings) {
+        const { __row, ...payload } = building;
+        try {
+          const response = await buildingsApi.create(payload);
+          const created = ((response as any)?.data ?? payload) as ApiBuilding;
+          importedNow.push({ ...created, ...payload, zone: selectedZone });
+          successCount++;
+        } catch (error: any) {
+          errors.push(`Ligne ${__row}: ${payload.idImmeuble} - ${error?.message || 'Erreur import'}`);
+        }
+      }
+
+      if (importedNow.length > 0) {
+        setLocallyImportedBuildings((previous) => [
+          ...previous.filter((item) => !importedNow.some((created) => created.idImmeuble === item.idImmeuble)),
+          ...importedNow,
+        ]);
+      }
+      await queryClient.invalidateQueries({ queryKey: ['buildings'] });
+      void refetch();
+      setShowImportModal(false);
+      setImportFilePath('');
+
+      const detail = errors.length > 0 ? `\n\nDétails:\n${errors.slice(0, 5).join('\n')}${errors.length > 5 ? '\n...' : ''}` : '';
+      Alert.alert('Import terminé', `${successCount} immeuble(s) importé(s)\n${errors.length} erreur(s)${detail}`);
+    } catch (error) {
+      Alert.alert('Erreur', `Échec de l'import Excel: ${error instanceof Error ? error.message : 'Erreur inconnue'}`);
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
   const setupNetworkListener = () => {
     // Simple and reliable: just use browser's built-in detection
     const updateStatus = () => {
@@ -157,7 +425,14 @@ export default function InfoImmeubleScreen() {
   };
 
   const handleBack = () => {
-    router.back();
+    router.replace('/(app)/selection');
+  };
+
+  const handleSwipeBack = (event: any) => {
+    const { state, translationX, translationY } = event.nativeEvent;
+    if (state === State.END && translationX > 90 && Math.abs(translationY) < 80) {
+      handleBack();
+    }
   };
 
   // Role management functions
@@ -178,7 +453,54 @@ export default function InfoImmeubleScreen() {
     }
   };
 
+  const exportTechnicalDossier = async (building: Building | null) => {
+    const id = building?._id || building?.id || building?.idImmeuble;
+    console.log('[TECHNICAL_DOSSIER_EXPORT][INFO] start', {
+      building,
+      resolvedId: id,
+    });
+
+    if (!building || !id) {
+      console.warn('[TECHNICAL_DOSSIER_EXPORT][INFO] no building or id');
+      Alert.alert('Erreur', 'Aucun immeuble sélectionné pour exporter le dossier technique.');
+      return;
+    }
+
+    setIsExportingTechnicalDossier(true);
+    try {
+      const request = await technicalDossiersApi.getDownloadRequest(String(id), building.idImmeuble || building.name);
+      const targetUri = `${FileSystem.documentDirectory}${request.fileName}`;
+      console.log('[TECHNICAL_DOSSIER_EXPORT][INFO] download request', {
+        url: request.url,
+        targetUri,
+        hasAuthHeader: Boolean(request.headers.Authorization),
+      });
+      const result = await FileSystem.downloadAsync(request.url, targetUri, {
+        headers: request.headers,
+      });
+      console.log('[TECHNICAL_DOSSIER_EXPORT][INFO] download result', result);
+      const savedUri = await saveFileWithPicker(result.uri, request.fileName);
+
+      Alert.alert(
+        'Dossier technique exporté',
+        `Fichier généré : ${request.fileName}\n\nEmplacement : ${savedUri}`,
+      );
+    } catch (error: any) {
+      console.error('[TECHNICAL_DOSSIER_EXPORT][INFO] failed', {
+        message: error?.message,
+        error,
+      });
+      Alert.alert('Erreur', error?.message || 'Impossible d’exporter le dossier technique.');
+    } finally {
+      setIsExportingTechnicalDossier(false);
+    }
+  };
+
   const handleActionSheetOption = (option: string) => {
+    console.log('[INFO_IMMEUBLE] action selected', {
+      option,
+      selectedBuildingForAction,
+    });
     setShowActionSheet(false);
     
     switch (option) {
@@ -188,12 +510,17 @@ export default function InfoImmeubleScreen() {
           params: { 
             buildingId: selectedBuildingForAction?.id, 
             buildingName: selectedBuildingForAction?.name,
-            itemId: itemId
+            itemId: itemId,
+            zone: selectedZone,
+            itemName: itemName || selectedZone
           }
         });
         break;
       case 'Export':
         Alert.alert('Export', `Exportation de l'immeuble: ${selectedBuildingForAction?.name}`);
+        break;
+      case 'Exporter dossier technique':
+        void exportTechnicalDossier(selectedBuildingForAction);
         break;
       case 'Affectation de plaque':
         setAssignmentMode(true);
@@ -413,7 +740,7 @@ export default function InfoImmeubleScreen() {
         assignedBy: currentUser.id,
         assignedAt: new Date()
       };
-      
+
       setBuildingAssignments(prev => {
         const filtered = prev.filter(a => a.itemId !== building.id);
         const updated = [...filtered, newAssignment];
@@ -421,7 +748,7 @@ export default function InfoImmeubleScreen() {
         saveAssignmentsToLocal(updated);
         return updated;
       });
-      
+
       // Silent assignment - no success alert
     } else if (canAccessBuilding(building)) {
       router.push({
@@ -429,7 +756,9 @@ export default function InfoImmeubleScreen() {
         params: { 
           buildingId: building.id, 
           buildingName: building.name,
-          itemId: itemId
+          itemId: itemId,
+          zone: selectedZone,
+          itemName: itemName || selectedZone
         }
       });
     }
@@ -438,6 +767,13 @@ export default function InfoImmeubleScreen() {
   const renderBuilding = ({ item }: { item: Building }) => {
     const assignedTechs = getAssignedTechnicians(item.id);
     const isSelectedForArchive = selectedBuildingsForArchive.includes(item.id);
+    const statusLabels: Record<string, string> = {
+      active: 'Actif',
+      pending: 'En attente',
+      archived: 'Archivé',
+      inactive: 'Inactif',
+    };
+    const statusText = statusLabels[item.status || 'active'] || item.status || 'Actif';
     
     return (
       <TouchableOpacity 
@@ -482,19 +818,37 @@ export default function InfoImmeubleScreen() {
                 {item.name}
               </Text>
             </View>
+            {currentUser.role === 'manager' && !isArchiveMode && !assignmentMode ? (
+              <TouchableOpacity
+                onPress={(event) => {
+                  event.stopPropagation?.();
+                  setSelectedBuildingForAction(item);
+                  setShowActionSheet(true);
+                }}
+                style={[styles.buildingMenuButton, { backgroundColor: isDark ? '#444' : '#e2e8f0' }]}
+              >
+                <Text style={[styles.buildingMenuButtonText, { color: isDark ? '#fff' : '#334155' }]}>⋮</Text>
+              </TouchableOpacity>
+            ) : null}
           </View>
           <Text style={[styles.buildingAddress, { color: isDark ? '#ccc' : '#666' }]}>
             {item.address}
           </Text>
-          
-          {/* Display assigned technician at the bottom */}
-          {assignedTechs.length > 0 && (
-            <View style={styles.assignedTechContainer}>
-              <Text style={[styles.assignedTechName, { color: '#007AFF' }]}>
-                {assignedTechs[0].name}
+
+          <View style={styles.buildingMetaRow}>
+            <View style={styles.buildingMetaPill}>
+              <Text style={styles.buildingMetaLabel}>Technicien</Text>
+              <Text style={[styles.buildingMetaValue, { color: assignedTechs.length > 0 ? '#007AFF' : '#64748b' }]}>
+                {assignedTechs[0]?.name || 'Non affecté'}
               </Text>
             </View>
-          )}
+            <View style={styles.buildingMetaPill}>
+              <Text style={styles.buildingMetaLabel}>État</Text>
+              <Text style={[styles.buildingMetaValue, { color: item.status === 'archived' ? '#dc2626' : '#16a34a' }]}>
+                {statusText}
+              </Text>
+            </View>
+          </View>
           
           {/* User role indicator */}
           {currentUser.role === 'technician' && !canAccessBuilding(item) && (
@@ -508,10 +862,19 @@ export default function InfoImmeubleScreen() {
   };
 
   return (
+    <GestureHandlerRootView style={{ flex: 1 }}>
+    <PanGestureHandler onHandlerStateChange={handleSwipeBack} activeOffsetX={30}>
     <View style={[styles.container, { backgroundColor: isDark ? '#000' : '#fff' }]}>
       <View style={styles.header}>
         <TouchableOpacity onPress={handleBack} style={styles.backButton}>
           <Text style={[styles.backText, { color: isDark ? '#fff' : '#007AFF' }]}>Retour</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.headerImportButton}
+          onPress={() => setShowImportModal(true)}
+          disabled={isImporting}
+        >
+          <Text style={styles.headerImportButtonText}>Import Excel</Text>
         </TouchableOpacity>
         <View style={styles.userInfo}>
           <View style={styles.userStatusRow}>
@@ -570,22 +933,123 @@ export default function InfoImmeubleScreen() {
         <ActivityIndicator size="large" style={{ flex: 1, justifyContent: 'center' }} />
       ) : (
         <View style={styles.listContainer}>
+          <View style={styles.zoneTitleContainer}>
+            <Text style={[styles.zoneTitle, { color: isDark ? '#fff' : '#000' }]}>
+              Zone : {itemName || selectedZone || 'Toutes les zones'}
+            </Text>
+            <Text style={[styles.zoneSubtitle, { color: isDark ? '#ccc' : '#666' }]}>
+              {filteredData?.length ?? 0} immeuble{(filteredData?.length ?? 0) > 1 ? 's' : ''}
+            </Text>
+            <TouchableOpacity
+              style={styles.importExcelButton}
+              onPress={() => setShowImportModal(true)}
+              disabled={isImporting}
+            >
+              <Text style={styles.importExcelButtonText}>
+                {isImporting ? 'Import en cours...' : 'Importer un fichier Excel'}
+              </Text>
+            </TouchableOpacity>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filtersScroll}>
+              <TouchableOpacity
+                onPress={() => setTechnicianFilter('all')}
+                style={[styles.filterChip, technicianFilter === 'all' && styles.filterChipActive]}
+              >
+                <Text style={[styles.filterChipText, technicianFilter === 'all' && styles.filterChipTextActive]}>Tous techniciens</Text>
+              </TouchableOpacity>
+              {technicians.map((tech) => (
+                <TouchableOpacity
+                  key={tech.id}
+                  onPress={() => setTechnicianFilter(tech.id)}
+                  style={[styles.filterChip, technicianFilter === tech.id && styles.filterChipActive]}
+                >
+                  <Text style={[styles.filterChipText, technicianFilter === tech.id && styles.filterChipTextActive]}>{tech.name}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filtersScroll}>
+              {[
+                ['all', 'Tous états'],
+                ['active', 'Actif'],
+                ['pending', 'En attente'],
+                ['archived', 'Archivé'],
+                ['inactive', 'Inactif'],
+              ].map(([value, label]) => (
+                <TouchableOpacity
+                  key={value}
+                  onPress={() => setStatusFilter(value)}
+                  style={[styles.filterChip, statusFilter === value && styles.filterChipActive]}
+                >
+                  <Text style={[styles.filterChipText, statusFilter === value && styles.filterChipTextActive]}>{label}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
           {renderHeader()}
           <FlatList
-            data={data}
+            data={filteredData}
             renderItem={renderBuilding}
             keyExtractor={(item) => item.id}
             contentContainerStyle={styles.list}
             ListEmptyComponent={
               <View style={styles.emptyContainer}>
                 <Text style={[styles.emptyText, { color: isDark ? '#ccc' : '#666' }]}>
-                  Aucun immeuble trouvé pour ce service
+                  Aucun immeuble trouvé pour cette zone
                 </Text>
               </View>
             }
           />
         </View>
       )}
+
+      <Modal
+        animationType="slide"
+        transparent={true}
+        visible={showImportModal}
+        onRequestClose={() => setShowImportModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.importModalContainer, { backgroundColor: isDark ? '#2a2a2a' : '#fff' }]}>
+            <Text style={[styles.modalTitle, { color: isDark ? '#fff' : '#000' }]}>
+              Importer les immeubles
+            </Text>
+            <Text style={[styles.importHint, { color: isDark ? '#ccc' : '#666' }]}>
+              Le fichier Excel doit contenir au minimum : ID Immeuble, ID Immeuble Système, Rue, N° Immeuble. La ville sera la zone actuelle si elle est renseignée.
+            </Text>
+
+            <TouchableOpacity style={styles.pickFileButton} onPress={handlePickExcelFile} disabled={isImporting}>
+              <Text style={styles.pickFileButtonText}>Choisir un fichier Excel</Text>
+            </TouchableOpacity>
+
+            {importFilePath ? (
+              <Text style={[styles.selectedFileName, { color: isDark ? '#fff' : '#000' }]} numberOfLines={2}>
+                {importFilePath.split('/').pop()}
+              </Text>
+            ) : null}
+
+            <View style={styles.importActions}>
+              <TouchableOpacity
+                style={[styles.importActionButton, styles.cancelImportButton]}
+                onPress={() => {
+                  setShowImportModal(false);
+                  setImportFilePath('');
+                }}
+                disabled={isImporting}
+              >
+                <Text style={styles.cancelImportText}>Annuler</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.importActionButton, styles.confirmImportButton, { opacity: isImporting ? 0.7 : 1 }]}
+                onPress={handleImportBuildings}
+                disabled={isImporting}
+              >
+                <Text style={styles.confirmImportText}>
+                  {isImporting ? 'Import...' : 'Importer'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* ActionSheet Modal for Manager */}
       <Modal
@@ -601,9 +1065,10 @@ export default function InfoImmeubleScreen() {
               Actions - {selectedBuildingForAction?.name}
             </Text>
 
-            {['Détails', 'Export', 'Affectation de plaque', 'Choix Qualifica', 'Archive', 'Annuler'].map((option, index) => (
+            {['Détails', 'Exporter dossier technique', 'Export', 'Affectation de plaque', 'Choix Qualifica', 'Archive', 'Annuler'].map((option, index) => (
               <TouchableOpacity
                 key={option}
+                disabled={option === 'Exporter dossier technique' && isExportingTechnicalDossier}
                 style={[
                   styles.actionSheetOption,
                   { 
@@ -620,7 +1085,7 @@ export default function InfoImmeubleScreen() {
                     fontWeight: option === 'Annuler' ? 'bold' : 'normal'
                   }
                 ]}>
-                  {option}
+                  {option === 'Exporter dossier technique' && isExportingTechnicalDossier ? 'Export en cours...' : option}
                 </Text>
               </TouchableOpacity>
             ))}
@@ -725,6 +1190,8 @@ export default function InfoImmeubleScreen() {
         </View>
       </Modal>
     </View>
+    </PanGestureHandler>
+    </GestureHandlerRootView>
   );
 }
 
@@ -988,6 +1455,114 @@ const styles = StyleSheet.create({
   listContainer: {
     flex: 1,
   },
+  zoneTitleContainer: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 8,
+  },
+  zoneTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+  },
+  zoneSubtitle: {
+    fontSize: 13,
+    marginTop: 4,
+  },
+  headerImportButton: {
+    marginLeft: 8,
+    borderRadius: 8,
+    backgroundColor: '#16a34a',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  headerImportButtonText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  importExcelButton: {
+    marginTop: 12,
+    borderRadius: 10,
+    backgroundColor: '#16a34a',
+    paddingVertical: 11,
+    alignItems: 'center',
+  },
+  importExcelButtonText: {
+    color: '#fff',
+    fontWeight: '700',
+  },
+  filtersScroll: {
+    marginTop: 10,
+  },
+  filterChip: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    backgroundColor: '#fff',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginRight: 8,
+  },
+  filterChipActive: {
+    backgroundColor: '#2563eb',
+    borderColor: '#2563eb',
+  },
+  filterChipText: {
+    color: '#334155',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  filterChipTextActive: {
+    color: '#fff',
+  },
+  importModalContainer: {
+    borderRadius: 15,
+    padding: 20,
+  },
+  importHint: {
+    fontSize: 13,
+    lineHeight: 19,
+    marginBottom: 14,
+  },
+  pickFileButton: {
+    borderRadius: 10,
+    backgroundColor: '#2563eb',
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  pickFileButtonText: {
+    color: '#fff',
+    fontWeight: '700',
+  },
+  selectedFileName: {
+    fontSize: 13,
+    marginTop: 10,
+  },
+  importActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 18,
+  },
+  importActionButton: {
+    flex: 1,
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  cancelImportButton: {
+    backgroundColor: '#e2e8f0',
+  },
+  confirmImportButton: {
+    backgroundColor: '#16a34a',
+  },
+  cancelImportText: {
+    color: '#0f172a',
+    fontWeight: '700',
+  },
+  confirmImportText: {
+    color: '#fff',
+    fontWeight: '700',
+  },
   techDropdownItem: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1050,6 +1625,18 @@ const styles = StyleSheet.create({
   buildingContent: {
     flex: 1,
   },
+  buildingMenuButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 8,
+  },
+  buildingMenuButtonText: {
+    fontSize: 22,
+    fontWeight: '700',
+  },
   buildingHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1067,6 +1654,29 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     fontStyle: 'italic',
+  },
+  buildingMetaRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 10,
+  },
+  buildingMetaPill: {
+    flex: 1,
+    borderRadius: 10,
+    backgroundColor: '#eef2f8',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  buildingMetaLabel: {
+    color: '#64748b',
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  buildingMetaValue: {
+    fontSize: 13,
+    fontWeight: '700',
+    marginTop: 2,
   },
   assignedTechsContainer: {
     marginTop: 10,

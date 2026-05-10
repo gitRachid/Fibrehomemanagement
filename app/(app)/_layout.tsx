@@ -26,12 +26,13 @@ export default function AppLayout() {
       }}
     >
       <Tabs.Screen name="dashboard" options={{ title: 'Dashboard' }} />
+      <Tabs.Screen name="selection" options={{ title: 'Zones' }} />
       <Tabs.Screen name="assignments" options={{ title: 'Assignments' }} />
       <Tabs.Screen name="settings" options={{ title: 'Settings' }} />
-      <Tabs.Screen name="selection" options={{ href: null }} />
       <Tabs.Screen name="details" options={{ href: null }} />
       <Tabs.Screen name="detailImmeuble" options={{ href: null }} />
       <Tabs.Screen name="infoImmeuble" options={{ href: null }} />
+      <Tabs.Screen name="kmzMap" options={{ href: null }} />
       <Tabs.Screen name="gestionUtilisateurs" options={{ href: null }} />
     </Tabs>
   );
