@@ -27,6 +27,12 @@ export default function SettingsScreen() {
         <Text style={{ color: '#fff', fontWeight: '700' }}>Sync now</Text>
       </Pressable>
       <Pressable
+        onPress={() => router.push('/(app)/gestionUtilisateurs')}
+        style={{ borderRadius: 12, backgroundColor: '#2563eb', alignItems: 'center', paddingVertical: 12 }}
+      >
+        <Text style={{ color: '#fff', fontWeight: '700' }}>👥 Gestion utilisateurs</Text>
+      </Pressable>
+      <Pressable
         onPress={async () => {
           await logout();
           router.replace('/');

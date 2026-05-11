@@ -5,16 +5,18 @@ type Props = {
   title: string;
   subtitle?: string;
   right?: ReactNode;
+  sticky?: ReactNode;
   loading?: boolean;
   children: ReactNode;
 };
 
-export function Screen({ title, subtitle, right, loading, children }: Props) {
+export function Screen({ title, subtitle, right, sticky, loading, children }: Props) {
   return (
     <ScrollView
       style={{ flex: 1, backgroundColor: '#f5f7fb' }}
       contentInsetAdjustmentBehavior="automatic"
       contentContainerStyle={{ padding: 16, gap: 16, paddingBottom: 32 }}
+      stickyHeaderIndices={sticky ? [1] : undefined}
     >
       <View
         style={{
@@ -34,6 +36,7 @@ export function Screen({ title, subtitle, right, loading, children }: Props) {
           {right}
         </View>
       </View>
+      {sticky ? <View style={{ backgroundColor: '#f5f7fb', paddingBottom: 2 }}>{sticky}</View> : null}
       {loading ? <ActivityIndicator color="#2563eb" size="large" style={{ marginTop: 24 }} /> : children}
     </ScrollView>
   );

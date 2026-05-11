@@ -447,7 +447,7 @@ export default function SelectionScreen() {
   return (
     <Screen
       title="Zones"
-      subtitle="Un seul service : choisissez une zone pour voir ses immeubles"
+      subtitle="Choisissez une zone pour voir ses immeubles"
       loading={isLoading}
     >
       {isError ? (

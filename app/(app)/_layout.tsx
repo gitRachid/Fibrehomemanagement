@@ -1,6 +1,6 @@
 import { Redirect, Tabs } from 'expo-router';
 import { useAuth } from '../../src/ctx';
-import { View, ActivityIndicator } from 'react-native';
+import { View, ActivityIndicator, Text } from 'react-native';
 
 export default function AppLayout() {
   const { isAuthenticated, isLoading } = useAuth();
@@ -23,12 +23,41 @@ export default function AppLayout() {
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: '#2563eb',
+        tabBarInactiveTintColor: '#94a3b8',
+        tabBarLabelStyle: {
+          fontSize: 12,
+          fontWeight: '700',
+        },
       }}
     >
-      <Tabs.Screen name="dashboard" options={{ title: 'Dashboard' }} />
-      <Tabs.Screen name="selection" options={{ title: 'Zones' }} />
-      <Tabs.Screen name="assignments" options={{ title: 'Assignments' }} />
-      <Tabs.Screen name="settings" options={{ title: 'Settings' }} />
+      <Tabs.Screen
+        name="dashboard"
+        options={{
+          title: 'Dashboard',
+          tabBarIcon: ({ color, size, focused }) => (
+            <Text style={{ color, fontSize: focused ? size + 2 : size }}>⌂</Text>
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="selection"
+        options={{
+          title: 'Zones',
+          tabBarIcon: ({ color, size, focused }) => (
+            <Text style={{ color, fontSize: focused ? size + 2 : size }}>⌖</Text>
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="settings"
+        options={{
+          title: 'Settings',
+          tabBarIcon: ({ color, size, focused }) => (
+            <Text style={{ color, fontSize: focused ? size + 2 : size }}>⚙</Text>
+          ),
+        }}
+      />
+      <Tabs.Screen name="assignments" options={{ href: null }} />
       <Tabs.Screen name="details" options={{ href: null }} />
       <Tabs.Screen name="detailImmeuble" options={{ href: null }} />
       <Tabs.Screen name="infoImmeuble" options={{ href: null }} />

@@ -82,6 +82,7 @@ export default function InfoImmeubleScreen() {
   const [locallyImportedBuildings, setLocallyImportedBuildings] = useState<ApiBuilding[]>([]);
   const [technicianFilter, setTechnicianFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [searchQuery, setSearchQuery] = useState('');
   const [isExportingTechnicalDossier, setIsExportingTechnicalDossier] = useState(false);
 
   const selectedZone = typeof zone === 'string' ? zone.trim() : '';
@@ -114,11 +115,27 @@ export default function InfoImmeubleScreen() {
     numeroNomImmeuble: b.numeroNomImmeuble,
   }));
   const filteredData = data?.filter((building) => {
+    const query = searchQuery.trim().toLowerCase();
     const matchesStatus = statusFilter === 'all' || building.status === statusFilter;
     const matchesTechnician =
       technicianFilter === 'all' ||
       buildingAssignments.some((assignment) => assignment.itemId === building.id && assignment.technicianIds.includes(technicianFilter));
-    return matchesStatus && matchesTechnician;
+    const matchesSearch =
+      !query ||
+      [
+        building.idImmeuble,
+        building.name,
+        building.address,
+        building.rueNomNom,
+        building.numeroNomImmeuble,
+        building.ville,
+        building.zone,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(query);
+    return matchesStatus && matchesTechnician && matchesSearch;
   });
 
   // Load saved assignments from local storage
@@ -837,13 +854,11 @@ export default function InfoImmeubleScreen() {
 
           <View style={styles.buildingMetaRow}>
             <View style={styles.buildingMetaPill}>
-              <Text style={styles.buildingMetaLabel}>Technicien</Text>
               <Text style={[styles.buildingMetaValue, { color: assignedTechs.length > 0 ? '#007AFF' : '#64748b' }]}>
                 {assignedTechs[0]?.name || 'Non affecté'}
               </Text>
             </View>
             <View style={styles.buildingMetaPill}>
-              <Text style={styles.buildingMetaLabel}>État</Text>
               <Text style={[styles.buildingMetaValue, { color: item.status === 'archived' ? '#dc2626' : '#16a34a' }]}>
                 {statusText}
               </Text>
@@ -869,13 +884,6 @@ export default function InfoImmeubleScreen() {
         <TouchableOpacity onPress={handleBack} style={styles.backButton}>
           <Text style={[styles.backText, { color: isDark ? '#fff' : '#007AFF' }]}>Retour</Text>
         </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.headerImportButton}
-          onPress={() => setShowImportModal(true)}
-          disabled={isImporting}
-        >
-          <Text style={styles.headerImportButtonText}>Import Excel</Text>
-        </TouchableOpacity>
         <View style={styles.userInfo}>
           <View style={styles.userStatusRow}>
             <Text style={[styles.userRole, { color: isDark ? '#ccc' : '#666' }]}>
@@ -883,20 +891,7 @@ export default function InfoImmeubleScreen() {
             </Text>
             {renderSyncStatus()}
           </View>
-          <Text style={[styles.userName, { color: isDark ? '#fff' : '#000' }]}>
-            {currentUser.name}
-          </Text>
         </View>
-        
-        {/* User Management Button for Managers */}
-        {currentUser.role === 'manager' && (
-          <TouchableOpacity 
-            style={styles.userManageButton}
-            onPress={() => router.push('/(app)/gestionUtilisateurs')}
-          >
-            <Text style={styles.userManageButtonText}>👥</Text>
-          </TouchableOpacity>
-        )}
       </View>
       
       {/* Archive Mode Header */}
@@ -940,15 +935,20 @@ export default function InfoImmeubleScreen() {
             <Text style={[styles.zoneSubtitle, { color: isDark ? '#ccc' : '#666' }]}>
               {filteredData?.length ?? 0} immeuble{(filteredData?.length ?? 0) > 1 ? 's' : ''}
             </Text>
-            <TouchableOpacity
-              style={styles.importExcelButton}
-              onPress={() => setShowImportModal(true)}
-              disabled={isImporting}
-            >
-              <Text style={styles.importExcelButtonText}>
-                {isImporting ? 'Import en cours...' : 'Importer un fichier Excel'}
-              </Text>
-            </TouchableOpacity>
+            <TextInput
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder="Rechercher un immeuble..."
+              placeholderTextColor="#94a3b8"
+              style={[
+                styles.searchInput,
+                {
+                  backgroundColor: isDark ? '#1f2937' : '#f8fafc',
+                  borderColor: isDark ? '#334155' : '#cbd5e1',
+                  color: isDark ? '#fff' : '#0f172a',
+                },
+              ]}
+            />
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filtersScroll}>
               <TouchableOpacity
                 onPress={() => setTechnicianFilter('all')}
@@ -1459,40 +1459,30 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 12,
     paddingBottom: 8,
+    alignItems: 'center',
   },
   zoneTitle: {
     fontSize: 20,
     fontWeight: '700',
+    textAlign: 'center',
   },
   zoneSubtitle: {
     fontSize: 13,
     marginTop: 4,
+    textAlign: 'center',
   },
-  headerImportButton: {
-    marginLeft: 8,
-    borderRadius: 8,
-    backgroundColor: '#16a34a',
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-  },
-  headerImportButtonText: {
-    color: '#fff',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  importExcelButton: {
+  searchInput: {
+    width: '100%',
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
     marginTop: 12,
-    borderRadius: 10,
-    backgroundColor: '#16a34a',
-    paddingVertical: 11,
-    alignItems: 'center',
-  },
-  importExcelButtonText: {
-    color: '#fff',
-    fontWeight: '700',
   },
   filtersScroll: {
     marginTop: 10,
+    alignSelf: 'stretch',
   },
   filterChip: {
     borderRadius: 999,
@@ -1674,7 +1664,7 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   buildingMetaValue: {
-    fontSize: 13,
+    fontSize: 10,
     fontWeight: '700',
     marginTop: 2,
   },
@@ -1714,10 +1704,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     textTransform: 'uppercase',
   },
-  userName: {
-    fontSize: 14,
-    fontWeight: '500',
-  },
   syncIndicator: {
     width: 16,
     height: 16,
@@ -1728,15 +1714,6 @@ const styles = StyleSheet.create({
   syncText: {
     fontSize: 10,
     fontWeight: 'bold',
-  },
-  userManageButton: {
-    padding: 8,
-    backgroundColor: '#007AFF20',
-    borderRadius: 20,
-    marginLeft: 12,
-  },
-  userManageButtonText: {
-    fontSize: 20,
   },
   // Original styles
   container: {
@@ -1771,11 +1748,11 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   buildingName: {
-    fontSize: 18,
+    fontSize: 14,
     fontWeight: 'bold',
   },
   buildingAddress: {
-    fontSize: 14,
+    fontSize: 10,
     marginTop: 5,
   },
   emptyContainer: {
