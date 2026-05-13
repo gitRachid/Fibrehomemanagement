@@ -96,34 +96,20 @@ const readSheetRows = (workbook, sheetName) => {
 
 router.post('/import', upload.single('routeOptique'), async (req, res) => {
   try {
-    console.log('[ROUTE_OPTIQUE_IMPORT] request received', {
-      zone: req.body?.zone,
-      hasFile: Boolean(req.file),
-      fileName: req.file?.originalname,
-      mimeType: req.file?.mimetype,
-      fileSize: req.file?.size,
-    });
 
     if (!req.file) {
-      console.warn('[ROUTE_OPTIQUE_IMPORT] rejected: no file uploaded');
       return res.status(400).json({ success: false, message: 'No Excel file uploaded' });
     }
 
     const zone = cleanValue(req.body.zone);
     if (!zone) {
-      console.warn('[ROUTE_OPTIQUE_IMPORT] rejected: missing zone');
       return res.status(400).json({ success: false, message: 'Zone is required' });
     }
 
     const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
     const sroSheetNames = workbook.SheetNames.filter((name) => name.toUpperCase().startsWith('SRO'));
-    console.log('[ROUTE_OPTIQUE_IMPORT] workbook parsed', {
-      allSheets: workbook.SheetNames,
-      sroSheets: sroSheetNames,
-    });
 
     if (sroSheetNames.length === 0) {
-      console.warn('[ROUTE_OPTIQUE_IMPORT] rejected: no SRO sheets found');
       return res.status(400).json({
         success: false,
         message: 'Aucune feuille SRO trouvée dans le fichier.',
@@ -134,17 +120,8 @@ router.post('/import', upload.single('routeOptique'), async (req, res) => {
       readSheetRows(workbook, sheetName).map((row) => ({ ...row, sheetName })),
     );
     const validRows = parsedRows.filter((row) => row.tiroirOdf);
-    console.log('[ROUTE_OPTIQUE_IMPORT] rows parsed', {
-      parsedRows: parsedRows.length,
-      validRows: validRows.length,
-      invalidRows: parsedRows.length - validRows.length,
-      sampleTiroirOdf: validRows.slice(0, 5).map((row) => row.tiroirOdf),
-    });
 
     if (validRows.length === 0) {
-      console.warn('[ROUTE_OPTIQUE_IMPORT] rejected: no valid Tiroir(ODF)', {
-        firstRows: parsedRows.slice(0, 3),
-      });
       return res.status(400).json({
         success: false,
         message: 'Aucune ligne valide avec Tiroir(ODF) trouvée dans les feuilles SRO.',
@@ -160,11 +137,6 @@ router.post('/import', upload.single('routeOptique'), async (req, res) => {
       sheets: sroSheetNames,
       rowCount: validRows.length,
       fiberColorMap: FIBER_COLOR_MAP,
-    });
-    console.log('[ROUTE_OPTIQUE_IMPORT] import document created', {
-      importId: importDocument._id,
-      zone,
-      rowCount: importDocument.rowCount,
     });
 
     const operations = validRows.map((row) => ({
@@ -190,14 +162,6 @@ router.post('/import', upload.single('routeOptique'), async (req, res) => {
     const result = await RouteOptiqueRow.bulkWrite(operations, { ordered: false });
     const stored = await RouteOptiqueRow.countDocuments({ importId: importDocument._id });
     const zoneTotal = await RouteOptiqueRow.countDocuments({ zone });
-    console.log('[ROUTE_OPTIQUE_IMPORT] bulk write completed', {
-      importId: importDocument._id,
-      inserted: result.upsertedCount || 0,
-      modified: result.modifiedCount || 0,
-      matched: result.matchedCount || 0,
-      stored,
-      zoneTotal,
-    });
 
     return res.status(201).json({
       success: true,

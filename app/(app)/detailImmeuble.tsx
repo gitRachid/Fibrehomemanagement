@@ -1,17 +1,20 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, TextInput, ActivityIndicator, Platform, Alert, Modal, Image, Dimensions, PanResponder } from 'react-native';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, TextInput, ActivityIndicator, Platform, Alert, Modal, Image, Dimensions, PanResponder, Linking, Animated } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useColorScheme } from 'react-native';
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
+import * as IntentLauncher from 'expo-intent-launcher';
+import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { GestureHandlerRootView, PanGestureHandler, State } from 'react-native-gesture-handler';
 import NetInfo from '@react-native-community/netinfo';
 import { useBuilding, useBuildingStatuses, useCreateBuildingStatus, useDeleteBuildingStatus, useUpdateBuilding } from '@/hooks';
 import { dataService } from '@/services/dataService';
-import { buildingsApi, photosApi, technicalDossiersApi, type Building } from '@/api';
+import { buildingsApi, photosApi, technicalDossiersApi, zoneDocumentsApi, type Building } from '@/api';
 import type { BuildingStatus } from '@/api';
 import { saveFileWithPicker } from '@/utils/saveFileWithPicker';
+import { useAuth } from '@/ctx';
 
 // Local Photo interface
 interface Photo {
@@ -149,7 +152,107 @@ const DEFAULT_STATUS_OPTIONS: BuildingStatus[] = [
   { value: 'inactive', label: 'Inactif', color: '#64748b' },
 ];
 const LOCAL_BUILDING_STATUSES_KEY = 'local_building_statuses_v1';
+const ZONE_IMPORT_FILES_KEY = 'zone_import_files_v1';
+const APPOINTMENTS_PLANNING_KEY = 'building_appointments_planning_v1';
+const MENU_FLOATING_BUTTON_SIZE = 58;
 const getBuildingPhotosKey = (id: string) => `building_photos_${id}`;
+const getBuildingAppointmentKey = (id: string) => `building_appointment_${id}`;
+
+const sanitizeFileName = (value: string) => (
+  value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9._-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    || 'plan-tirage-fusion.pdf'
+);
+
+type ZoneImportFile = {
+  documentId?: string;
+  zone: string;
+  kind: 'kmz' | 'routeOptiqueExcel' | 'planTirageFusionPdf';
+  name: string;
+  uri: string;
+  importedAt: string;
+};
+
+type PlanPdfOption = ZoneImportFile & {
+  remoteOnly?: boolean;
+  fileSize?: number;
+};
+
+type BuildingAppointment = {
+  buildingKey?: string;
+  buildingName?: string;
+  zone?: string;
+  createdBy?: string;
+  createdByEmail?: string;
+  createdByName?: string;
+  createdByRole?: string;
+  date: string;
+  time: string;
+  note?: string;
+  updatedAt: string;
+};
+
+const formatAppointmentDate = (date: Date) => (
+  `${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')}/${date.getFullYear()}`
+);
+
+const formatAppointmentTime = (date: Date) => (
+  `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+);
+
+const parseAppointmentDateTime = (dateValue?: string, timeValue?: string) => {
+  const now = new Date();
+  const [day, month, year] = String(dateValue || formatAppointmentDate(now)).split('/').map(Number);
+  const [hours, minutes] = String(timeValue || formatAppointmentTime(now)).split(':').map(Number);
+  return new Date(
+    Number.isFinite(year) ? year : now.getFullYear(),
+    Number.isFinite(month) ? month - 1 : now.getMonth(),
+    Number.isFinite(day) ? day : now.getDate(),
+    Number.isFinite(hours) ? hours : now.getHours(),
+    Number.isFinite(minutes) ? minutes : now.getMinutes(),
+  );
+};
+
+const getAppointmentSortTime = (appointment: BuildingAppointment) => (
+  parseAppointmentDateTime(appointment.date, appointment.time).getTime()
+);
+
+const mergeAppointmentsByBuilding = (appointments: BuildingAppointment[]) => (
+  Array.from(
+    appointments
+      .filter((item) => item.buildingKey && item.date && item.time)
+      .reduce((map, item) => map.set(String(item.buildingKey), item), new Map<string, BuildingAppointment>())
+      .values(),
+  ).sort((a, b) => getAppointmentSortTime(a) - getAppointmentSortTime(b))
+);
+
+const getAppointmentOwnerKeys = (appointment: BuildingAppointment) => (
+  [appointment.createdBy, appointment.createdByEmail]
+    .map((value) => String(value ?? '').trim().toLowerCase())
+    .filter(Boolean)
+);
+
+const getAppointmentDateOptions = () => {
+  const today = new Date();
+  return Array.from({ length: 14 }, (_, index) => {
+    const date = new Date(today);
+    date.setDate(today.getDate() + index);
+    return {
+      value: formatAppointmentDate(date),
+      label: index === 0 ? "Aujourd'hui" : index === 1 ? 'Demain' : date.toLocaleDateString('fr-FR', { weekday: 'short', day: '2-digit', month: '2-digit' }),
+    };
+  });
+};
+
+const APPOINTMENT_TIME_OPTIONS = [
+  '08:00', '08:30', '09:00', '09:30',
+  '10:00', '10:30', '11:00', '11:30',
+  '12:00', '14:00', '14:30', '15:00',
+  '15:30', '16:00', '16:30', '17:00',
+];
 
 export default function DetailImmeubleScreen() {
   const { buildingId, buildingName, itemId, zone, itemName } = useLocalSearchParams<{
@@ -160,7 +263,6 @@ export default function DetailImmeubleScreen() {
     itemName?: string;
   }>();
   const router = useRouter();
-  console.log("je suis dans detail")
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
 
@@ -189,14 +291,32 @@ export default function DetailImmeubleScreen() {
   const [isExportingTechnicalDossier, setIsExportingTechnicalDossier] = useState(false);
   const [showStatusDropdown, setShowStatusDropdown] = useState(false);
   const [showAddStatusModal, setShowAddStatusModal] = useState(false);
+  const [showPlanPdfPicker, setShowPlanPdfPicker] = useState(false);
+  const [showAppointmentModal, setShowAppointmentModal] = useState(false);
+  const [showPlanningModal, setShowPlanningModal] = useState(false);
+  const [showSystemDatePicker, setShowSystemDatePicker] = useState(false);
+  const [showSystemTimePicker, setShowSystemTimePicker] = useState(false);
   const [newStatusLabel, setNewStatusLabel] = useState('');
   const [newStatusManagerOnly, setNewStatusManagerOnly] = useState(false);
   const [localStatusOptions, setLocalStatusOptions] = useState<BuildingStatus[]>([]);
+  const [planPdfOptions, setPlanPdfOptions] = useState<PlanPdfOption[]>([]);
+  const [appointment, setAppointment] = useState<BuildingAppointment | null>(null);
+  const [appointmentDate, setAppointmentDate] = useState('');
+  const [appointmentTime, setAppointmentTime] = useState('');
+  const [appointmentNote, setAppointmentNote] = useState('');
+  const [planningAppointments, setPlanningAppointments] = useState<BuildingAppointment[]>([]);
+  const { user } = useAuth();
   const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
-  const currentUserRole = 'manager';
+  const currentUserRole = user?.role || 'technician';
   const photoScaleRef = useRef(photoScale);
   const photoOffsetRef = useRef(photoOffset);
   const photoPanStartRef = useRef({ x: 0, y: 0 });
+  const headerOffset = useRef(new Animated.Value(0)).current;
+  const topControlsOffset = useRef(new Animated.Value(0)).current;
+  const lastScrollOffsetRef = useRef(0);
+  const isHeaderHiddenRef = useRef(false);
+  const floatingMenuPosition = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
+  const floatingMenuOffset = useRef({ x: 0, y: 0 });
 
   const { data: statusOptions = [] } = useBuildingStatuses();
   const mergedStatusOptions = Array.from(
@@ -207,6 +327,14 @@ export default function DetailImmeubleScreen() {
   const visibleStatusOptions = mergedStatusOptions.filter((status) => !status.managerOnly || currentUserRole === 'manager');
   const createStatusMutation = useCreateBuildingStatus();
   const deleteStatusMutation = useDeleteBuildingStatus();
+  const currentAppointmentKey = useMemo(
+    () => String(buildingsData[0]?._id || buildingsData[0]?.idImmeuble || apiBuilding?._id || apiBuilding?.idImmeuble || buildingId || '').trim(),
+    [apiBuilding?._id, apiBuilding?.idImmeuble, buildingId, buildingsData],
+  );
+  const currentUserKeys = useMemo(
+    () => [user?.id, user?.sub, user?.email].map((value) => String(value ?? '').trim().toLowerCase()).filter(Boolean),
+    [user?.id, user?.sub, user?.email],
+  );
 
   useEffect(() => {
     photoScaleRef.current = photoScale;
@@ -262,6 +390,74 @@ export default function DetailImmeubleScreen() {
       },
     }),
   ).current;
+
+  const floatingMenuPanResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onPanResponderGrant: () => {
+        floatingMenuPosition.setOffset(floatingMenuOffset.current);
+        floatingMenuPosition.setValue({ x: 0, y: 0 });
+      },
+      onPanResponderMove: Animated.event(
+        [null, { dx: floatingMenuPosition.x, dy: floatingMenuPosition.y }],
+        { useNativeDriver: false },
+      ),
+      onPanResponderRelease: (_, gesture) => {
+        const maxX = Math.max(0, screenWidth - MENU_FLOATING_BUTTON_SIZE - 30);
+        const maxY = Math.max(0, screenHeight - MENU_FLOATING_BUTTON_SIZE - 150);
+        const next = {
+          x: Math.max(-maxX, Math.min(0, floatingMenuOffset.current.x + gesture.dx)),
+          y: Math.max(-maxY, Math.min(40, floatingMenuOffset.current.y + gesture.dy)),
+        };
+
+        floatingMenuPosition.flattenOffset();
+        floatingMenuOffset.current = next;
+        Animated.spring(floatingMenuPosition, {
+          toValue: next,
+          useNativeDriver: false,
+          friction: 6,
+          tension: 90,
+        }).start();
+
+        if (Math.abs(gesture.dx) < 6 && Math.abs(gesture.dy) < 6) {
+          setShowBuildingMenu(true);
+        }
+      },
+    }),
+  ).current;
+
+  const animateHeaderVisibility = (hidden: boolean) => {
+    if (isHeaderHiddenRef.current === hidden) return;
+    isHeaderHiddenRef.current = hidden;
+    Animated.parallel([
+      Animated.timing(headerOffset, {
+        toValue: hidden ? -76 : 0,
+        duration: hidden ? 260 : 180,
+        useNativeDriver: true,
+      }),
+      Animated.timing(topControlsOffset, {
+        toValue: hidden ? -66 : 0,
+        duration: hidden ? 260 : 180,
+        useNativeDriver: false,
+      }),
+    ]).start();
+  };
+
+  const handleDetailScroll = (event: any) => {
+    const currentOffset = Math.max(0, event.nativeEvent.contentOffset?.y || 0);
+    const previousOffset = lastScrollOffsetRef.current;
+    const delta = currentOffset - previousOffset;
+
+    if (currentOffset < 8) {
+      animateHeaderVisibility(false);
+    } else if (delta > 8) {
+      animateHeaderVisibility(true);
+    } else if (delta < -2) {
+      animateHeaderVisibility(false);
+    }
+
+    lastScrollOffsetRef.current = currentOffset;
+  };
 
   // Use dataService for offline storage
   const saveToLocalStorage = async (key: string, data: any) => {
@@ -376,6 +572,28 @@ export default function DetailImmeubleScreen() {
     void mergeApiBuildingWithLocalPhotos();
   }, [apiBuilding, buildingId]);
 
+  useEffect(() => {
+    const loadAppointment = async () => {
+      if (!currentAppointmentKey) return;
+
+      const savedAppointment = await loadFromLocalStorage(getBuildingAppointmentKey(currentAppointmentKey));
+      if (savedAppointment && typeof savedAppointment === 'object') {
+        const nextAppointment = savedAppointment as BuildingAppointment;
+        setAppointment(nextAppointment);
+        setAppointmentDate(nextAppointment.date || '');
+        setAppointmentTime(nextAppointment.time || '');
+        setAppointmentNote(nextAppointment.note || '');
+      } else {
+        setAppointment(null);
+        setAppointmentDate('');
+        setAppointmentTime('');
+        setAppointmentNote('');
+      }
+    };
+
+    void loadAppointment();
+  }, [currentAppointmentKey]);
+
   const persistBuildingPhotos = async (building: Partial<Building>) => {
     const key = building._id || building.idImmeuble || buildingId;
     if (!key) return;
@@ -446,7 +664,6 @@ export default function DetailImmeubleScreen() {
   };
 
   const handleSave = async () => {
-    console.log('Saving buildings data:', buildingsData);
     
     if (buildingsData.length > 0 && buildingsData[0]._id) {
       try {
@@ -478,12 +695,6 @@ export default function DetailImmeubleScreen() {
         continue;
       }
 
-      console.log('[PHOTO_UPLOAD] uploading pending photo', {
-        buildingId: buildingDbId,
-        photoId: photo.id,
-        type: photo.type,
-        uri: photo.uri,
-      });
       const response = await photosApi.uploadMobile(buildingDbId, {
         ...photo,
         timestamp: photo.timestamp instanceof Date ? photo.timestamp : new Date(photo.timestamp),
@@ -656,6 +867,261 @@ export default function DetailImmeubleScreen() {
     }
   };
 
+  const openAppointmentModal = () => {
+    setShowBuildingMenu(false);
+    setAppointmentDate(appointment?.date || getAppointmentDateOptions()[0].value);
+    setAppointmentTime(appointment?.time || APPOINTMENT_TIME_OPTIONS[0]);
+    setAppointmentNote(appointment?.note || '');
+    setShowAppointmentModal(true);
+  };
+
+  const openPlanningModal = async () => {
+    setShowBuildingMenu(false);
+    const savedPlanning = await loadFromLocalStorage(APPOINTMENTS_PLANNING_KEY);
+    const planning = Array.isArray(savedPlanning) ? savedPlanning as BuildingAppointment[] : [];
+    const mergedPlanning = mergeAppointmentsByBuilding([
+      ...planning,
+      ...(appointment ? [appointment] : []),
+    ]);
+    await saveToLocalStorage(APPOINTMENTS_PLANNING_KEY, mergedPlanning);
+    const visiblePlanning = currentUserRole === 'manager'
+      ? mergedPlanning
+      : mergedPlanning.filter((item) => {
+          const ownerKeys = getAppointmentOwnerKeys(item);
+          return ownerKeys.length > 0 && ownerKeys.some((key) => currentUserKeys.includes(key));
+        });
+    setPlanningAppointments(visiblePlanning);
+    setShowPlanningModal(true);
+  };
+
+  const onSystemDateChange = (event: DateTimePickerEvent, selectedDate?: Date) => {
+    if (Platform.OS === 'android') setShowSystemDatePicker(false);
+    if (event.type === 'dismissed' || !selectedDate) return;
+    setAppointmentDate(formatAppointmentDate(selectedDate));
+  };
+
+  const onSystemTimeChange = (event: DateTimePickerEvent, selectedDate?: Date) => {
+    if (Platform.OS === 'android') setShowSystemTimePicker(false);
+    if (event.type === 'dismissed' || !selectedDate) return;
+    setAppointmentTime(formatAppointmentTime(selectedDate));
+  };
+
+  const saveAppointment = async () => {
+    const date = appointmentDate.trim();
+    const time = appointmentTime.trim();
+    const note = appointmentNote.trim();
+
+    if (!currentAppointmentKey) {
+      Alert.alert('Rendez-vous', 'Aucun immeuble sélectionné.');
+      return;
+    }
+    if (!date || !time) {
+      Alert.alert('Rendez-vous', 'Veuillez saisir la date et l’heure.');
+      return;
+    }
+
+    const nextAppointment: BuildingAppointment = {
+      buildingKey: currentAppointmentKey,
+      buildingName: String(buildingName || buildingsData[0]?.idImmeuble || apiBuilding?.idImmeuble || 'Immeuble'),
+      zone: String(zone || buildingsData[0]?.zone || buildingsData[0]?.ville || ''),
+      createdBy: String(user?.id || user?.sub || user?.email || ''),
+      createdByEmail: user?.email,
+      createdByName: user?.name || user?.email,
+      createdByRole: user?.role,
+      date,
+      time,
+      note,
+      updatedAt: new Date().toISOString(),
+    };
+
+    await saveToLocalStorage(getBuildingAppointmentKey(currentAppointmentKey), nextAppointment);
+    const savedPlanning = await loadFromLocalStorage(APPOINTMENTS_PLANNING_KEY);
+    const planning = Array.isArray(savedPlanning) ? savedPlanning as BuildingAppointment[] : [];
+    const nextPlanning = [
+      ...planning.filter((item) => item.buildingKey !== currentAppointmentKey),
+      nextAppointment,
+    ];
+    await saveToLocalStorage(APPOINTMENTS_PLANNING_KEY, mergeAppointmentsByBuilding(nextPlanning));
+    setAppointment(nextAppointment);
+    setShowAppointmentModal(false);
+    Alert.alert('Rendez-vous', 'Rendez-vous enregistré.');
+  };
+
+  const deleteAppointment = async () => {
+    if (!currentAppointmentKey) return;
+
+    await dataService.saveToStorage(getBuildingAppointmentKey(currentAppointmentKey), null);
+    const savedPlanning = await loadFromLocalStorage(APPOINTMENTS_PLANNING_KEY);
+    const planning = Array.isArray(savedPlanning) ? savedPlanning as BuildingAppointment[] : [];
+    await saveToLocalStorage(APPOINTMENTS_PLANNING_KEY, planning.filter((item) => item.buildingKey !== currentAppointmentKey));
+    setAppointment(null);
+    setAppointmentDate('');
+    setAppointmentTime('');
+    setAppointmentNote('');
+    setShowAppointmentModal(false);
+  };
+
+  const openPdfUri = async (uri: string) => {
+    if (Platform.OS === 'android' && (FileSystem as any).getContentUriAsync) {
+      const contentUri = await (FileSystem as any).getContentUriAsync(uri);
+      await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
+        data: contentUri,
+        type: 'application/pdf',
+        flags: 1,
+      });
+      return;
+    }
+
+    await Linking.openURL(uri);
+  };
+
+  const openPlanPdfOption = async (pdf: PlanPdfOption) => {
+    try {
+      setShowPlanPdfPicker(false);
+
+      if (!pdf.remoteOnly && pdf.uri) {
+        const fileInfo = await FileSystem.getInfoAsync(pdf.uri);
+        if (fileInfo.exists) {
+          await openPdfUri(pdf.uri);
+          return;
+        }
+      }
+
+      if (!pdf.documentId) {
+        Alert.alert('PDF introuvable', 'Ce PDF local n’existe plus. Réimportez le fichier PDF.');
+        return;
+      }
+
+      const pdfDirectory = `${FileSystem.documentDirectory}zone-documents/`;
+      await FileSystem.makeDirectoryAsync(pdfDirectory, { intermediates: true });
+      const localPdfUri = `${pdfDirectory}${Date.now()}_${sanitizeFileName(pdf.name)}`;
+      const request = await zoneDocumentsApi.getDownloadRequest(pdf.documentId, pdf.name);
+      await FileSystem.downloadAsync(request.url, localPdfUri, { headers: request.headers });
+
+      const previous = await dataService.loadFromStorage<ZoneImportFile[]>(ZONE_IMPORT_FILES_KEY);
+      const storedFiles = Array.isArray(previous) ? previous : [];
+      await dataService.saveToStorage(ZONE_IMPORT_FILES_KEY, [
+        ...storedFiles,
+        {
+          documentId: pdf.documentId,
+          zone: pdf.zone,
+          kind: 'planTirageFusionPdf',
+          name: pdf.name,
+          uri: localPdfUri,
+          importedAt: new Date().toISOString(),
+        },
+      ]);
+
+      await openPdfUri(localPdfUri);
+    } catch (error: any) {
+      Alert.alert('Erreur PDF', error?.message || 'Impossible d’ouvrir le PDF plan Tirage et Fusion.');
+    }
+  };
+
+  const deletePlanPdfOption = (pdf: PlanPdfOption) => {
+    Alert.alert('Supprimer PDF', `Supprimer "${pdf.name}" ?`, [
+      { text: 'Annuler', style: 'cancel' },
+      {
+        text: 'Supprimer',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            if (pdf.documentId) {
+              await zoneDocumentsApi.delete(pdf.documentId);
+            }
+
+            if (pdf.uri) {
+              const fileInfo = await FileSystem.getInfoAsync(pdf.uri);
+              if (fileInfo.exists) {
+                await FileSystem.deleteAsync(pdf.uri, { idempotent: true });
+              }
+            }
+
+            const previous = await dataService.loadFromStorage<ZoneImportFile[]>(ZONE_IMPORT_FILES_KEY);
+            const storedFiles = Array.isArray(previous) ? previous : [];
+            const nextFiles = storedFiles.filter((file) => {
+              if (pdf.documentId && file.documentId === pdf.documentId) return false;
+              if (pdf.uri && file.uri === pdf.uri) return false;
+              return !(file.zone === pdf.zone && file.name === pdf.name && file.importedAt === pdf.importedAt);
+            });
+
+            await dataService.saveToStorage(ZONE_IMPORT_FILES_KEY, nextFiles);
+            const nextOptions = planPdfOptions.filter((option) => {
+              if (pdf.documentId && option.documentId === pdf.documentId) return false;
+              if (pdf.uri && option.uri === pdf.uri) return false;
+              return !(option.zone === pdf.zone && option.name === pdf.name && option.importedAt === pdf.importedAt);
+            });
+            setPlanPdfOptions(nextOptions);
+
+            if (nextOptions.length === 0) {
+              setShowPlanPdfPicker(false);
+            }
+          } catch (error: any) {
+            Alert.alert('Erreur', error?.message || 'Impossible de supprimer ce PDF.');
+          }
+        },
+      },
+    ]);
+  };
+
+  const openPlanTirageFusionPdf = async () => {
+    setShowBuildingMenu(false);
+    try {
+      const currentZone = String(zone || buildingsData[0]?.zone || buildingsData[0]?.ville || '').trim();
+      if (!currentZone) {
+        Alert.alert('PDF introuvable', 'Aucune zone associée à cet immeuble.');
+        return;
+      }
+
+      const importedFiles = await dataService.loadFromStorage<ZoneImportFile[]>(ZONE_IMPORT_FILES_KEY);
+      const storedFiles = Array.isArray(importedFiles) ? importedFiles : [];
+      const localPdfs = storedFiles
+        .filter((file) => file.zone === currentZone && file.kind === 'planTirageFusionPdf')
+        .sort((a, b) => new Date(b.importedAt).getTime() - new Date(a.importedAt).getTime());
+
+      const documentsResponse = await zoneDocumentsApi.getByZone(currentZone);
+      const remotePdfs: PlanPdfOption[] = documentsResponse.data
+        .filter((document) => document.kind === 'planTirageFusionPdf')
+        .map((document) => ({
+          documentId: document._id,
+          zone: document.zone,
+          kind: 'planTirageFusionPdf',
+          name: document.fileName,
+          uri: '',
+          importedAt: document.importedAt,
+          fileSize: document.fileSize,
+          remoteOnly: true,
+        }));
+
+      const optionsByKey = new Map<string, PlanPdfOption>();
+      for (const pdf of remotePdfs) {
+        optionsByKey.set(pdf.documentId || `${pdf.zone}:${pdf.name}:${pdf.importedAt}`, pdf);
+      }
+      for (const pdf of localPdfs) {
+        optionsByKey.set(pdf.documentId || `${pdf.zone}:${pdf.name}:${pdf.importedAt}`, pdf);
+      }
+
+      const options = Array.from(optionsByKey.values())
+        .sort((a, b) => new Date(b.importedAt).getTime() - new Date(a.importedAt).getTime())
+        .slice(0, 10);
+
+      if (options.length === 0) {
+        Alert.alert('PDF introuvable', 'Importez d’abord le PDF plan Tirage et Fusion depuis le menu de la zone.');
+        return;
+      }
+
+      if (options.length === 1) {
+        await openPlanPdfOption(options[0]);
+        return;
+      }
+
+      setPlanPdfOptions(options);
+      setShowPlanPdfPicker(true);
+    } catch (error: any) {
+      Alert.alert('Erreur PDF', error?.message || 'Impossible d’ouvrir le PDF plan Tirage et Fusion.');
+    }
+  };
+
   // GPS Functions
   const requestLocationPermission = async () => {
     const { status } = await Location.requestForegroundPermissionsAsync();
@@ -689,7 +1155,6 @@ export default function DetailImmeubleScreen() {
 
   // Photo Functions
   const openPhotoModal = (buildingIndex: number) => {
-    console.log('Opening photo modal for building index:', buildingIndex);
     setSelectedBuildingIndex(buildingIndex);
     setShowPhotoSourceModal(true);
   };
@@ -1014,7 +1479,6 @@ export default function DetailImmeubleScreen() {
         <TouchableOpacity 
           style={[styles.addPhotoButton, { backgroundColor: isDark ? '#333' : '#f0f0f0' }]}
           onPress={() => {
-            console.log('Photo button pressed! Building index:', buildingIndex);
             openPhotoModal(buildingIndex);
           }}
         >
@@ -1030,7 +1494,6 @@ export default function DetailImmeubleScreen() {
         <TouchableOpacity 
           style={[styles.addPhotoButton, { backgroundColor: isDark ? '#333' : '#f0f0f0' }]}
           onPress={() => {
-            console.log('Photo button pressed! Building index:', buildingIndex);
             openPhotoModal(buildingIndex);
           }}
         >
@@ -1296,12 +1759,24 @@ export default function DetailImmeubleScreen() {
     <GestureHandlerRootView style={{ flex: 1 }}>
     <PanGestureHandler onHandlerStateChange={handleSwipeBack} activeOffsetX={30}>
     <View style={[styles.container, { backgroundColor: isDark ? '#000' : '#fff' }]}>
-      <View style={styles.header}>
+      <Animated.View
+        style={[
+          styles.header,
+          {
+            opacity: headerOffset.interpolate({
+              inputRange: [-76, 0],
+              outputRange: [0, 1],
+              extrapolate: 'clamp',
+            }),
+            transform: [{ translateY: headerOffset }],
+          },
+        ]}
+      >
         <TouchableOpacity onPress={handleBack} style={styles.backButton}>
           <Text style={[styles.backText, { color: isDark ? '#fff' : '#007AFF' }]}>Retour</Text>
         </TouchableOpacity>
         <Text style={[styles.headerTitle, { color: isDark ? '#fff' : '#000' }]}>
-          Détails Immeuble - {buildingName}
+          Détails Immeuble
         </Text>
         <TouchableOpacity
           onPress={() => setShowBuildingMenu(true)}
@@ -1309,64 +1784,67 @@ export default function DetailImmeubleScreen() {
         >
           <Text style={[styles.headerMenuText, { color: isDark ? '#fff' : '#334155' }]}>⋮</Text>
         </TouchableOpacity>
-      </View>
+      </Animated.View>
 
-      <View style={styles.statusSelectorContainer}>
-        <Text style={[styles.statusSelectorLabel, { color: isDark ? '#ccc' : '#64748b' }]}>État</Text>
-        <TouchableOpacity
-          onPress={() => setShowStatusDropdown((current) => !current)}
-          style={[styles.statusSelectorButton, { backgroundColor: isDark ? '#1f2937' : '#fff', borderColor: isDark ? '#374151' : '#cbd5e1' }]}
-        >
-          <Text style={[styles.statusSelectorText, { color: visibleStatusOptions.find((option) => option.value === buildingsData[0]?.status)?.color || '#16a34a' }]}>
-            {visibleStatusOptions.find((option) => option.value === buildingsData[0]?.status)?.label || 'Actif'}
-          </Text>
-          <Text style={[styles.statusSelectorArrow, { color: isDark ? '#fff' : '#334155' }]}>
-            {showStatusDropdown ? '▲' : '▼'}
-          </Text>
-        </TouchableOpacity>
-        {currentUserRole === 'manager' ? (
+      <Animated.View style={{ transform: [{ translateY: topControlsOffset }], marginBottom: topControlsOffset }}>
+        <View style={styles.statusSelectorContainer}>
+          <Text style={[styles.statusSelectorLabel, { color: isDark ? '#ccc' : '#64748b' }]}>État</Text>
           <TouchableOpacity
-            onPress={() => {
-              setShowStatusDropdown(false);
-              setShowAddStatusModal(true);
-            }}
-            style={styles.statusAddButtonAlways}
+            onPress={() => setShowStatusDropdown((current) => !current)}
+            style={[styles.statusSelectorButton, { backgroundColor: isDark ? '#1f2937' : '#fff', borderColor: isDark ? '#374151' : '#cbd5e1' }]}
           >
-            <Text style={styles.statusAddText}>+ Ajouter état</Text>
+            <Text style={[styles.statusSelectorText, { color: visibleStatusOptions.find((option) => option.value === buildingsData[0]?.status)?.color || '#16a34a' }]}>
+              {visibleStatusOptions.find((option) => option.value === buildingsData[0]?.status)?.label || 'Actif'}
+            </Text>
+            <Text style={[styles.statusSelectorArrow, { color: isDark ? '#fff' : '#334155' }]}>
+              {showStatusDropdown ? '▲' : '▼'}
+            </Text>
           </TouchableOpacity>
-        ) : null}
-        {showStatusDropdown ? (
-          <View style={[styles.statusDropdown, { backgroundColor: isDark ? '#1f2937' : '#fff', borderColor: isDark ? '#374151' : '#cbd5e1' }]}>
-            {visibleStatusOptions.map((option) => (
-              <View key={option.value} style={styles.statusDropdownRow}>
-                <TouchableOpacity
-                  onPress={() => handleStatusChange(option.value)}
-                  style={styles.statusDropdownItem}
-                >
-                  <Text style={[styles.statusDropdownText, { color: option.color }]}>
-                    {option.label}{option.managerOnly ? ' (manager)' : ''}
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={() => deleteStatus(option.value, option.label)}
-                  style={styles.statusDeleteButton}
-                >
-                  <Text style={styles.statusDeleteText}>Supprimer</Text>
-                </TouchableOpacity>
-              </View>
-            ))}
-            <TouchableOpacity
-              onPress={() => {
-                setShowStatusDropdown(false);
-                setShowAddStatusModal(true);
-              }}
-              style={styles.statusAddButton}
-            >
-              <Text style={styles.statusAddText}>+ Ajouter un état</Text>
-            </TouchableOpacity>
+          {showStatusDropdown ? (
+            <View style={[styles.statusDropdown, { backgroundColor: isDark ? '#1f2937' : '#fff', borderColor: isDark ? '#374151' : '#cbd5e1' }]}>
+              {visibleStatusOptions.map((option) => (
+                <View key={option.value} style={styles.statusDropdownRow}>
+                  <TouchableOpacity
+                    onPress={() => handleStatusChange(option.value)}
+                    style={styles.statusDropdownItem}
+                  >
+                    <Text style={[styles.statusDropdownText, { color: option.color }]}>
+                      {option.label}{option.managerOnly ? ' (manager)' : ''}
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => deleteStatus(option.value, option.label)}
+                    style={styles.statusDeleteButton}
+                  >
+                    <Text style={styles.statusDeleteText}>Supprimer</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+              <TouchableOpacity
+                onPress={() => {
+                  setShowStatusDropdown(false);
+                  setShowAddStatusModal(true);
+                }}
+                style={styles.statusAddButton}
+              >
+                <Text style={styles.statusAddText}>+ Ajouter un état</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
+        </View>
+
+        {appointment ? (
+          <View style={[styles.appointmentBanner, { backgroundColor: isDark ? '#172554' : '#eff6ff', borderColor: isDark ? '#1d4ed8' : '#bfdbfe' }]}>
+            <Text style={[styles.appointmentTitle, { color: isDark ? '#dbeafe' : '#1d4ed8' }]}>Rendez-vous</Text>
+            <Text style={[styles.appointmentText, { color: isDark ? '#fff' : '#0f172a' }]}>
+              {appointment.date} à {appointment.time}
+            </Text>
+            {appointment.note ? (
+              <Text style={[styles.appointmentNote, { color: isDark ? '#cbd5e1' : '#64748b' }]}>{appointment.note}</Text>
+            ) : null}
           </View>
         ) : null}
-      </View>
+      </Animated.View>
 
       <Modal visible={showAddStatusModal} transparent animationType="fade" onRequestClose={() => setShowAddStatusModal(false)}>
         <View style={styles.menuOverlay}>
@@ -1407,6 +1885,164 @@ export default function DetailImmeubleScreen() {
         </View>
       </Modal>
 
+      <Modal visible={showPlanPdfPicker} transparent animationType="fade" onRequestClose={() => setShowPlanPdfPicker(false)}>
+        <View style={styles.menuOverlay}>
+          <View style={[styles.buildingMenu, { backgroundColor: isDark ? '#1f2937' : '#fff', maxHeight: '72%' }]}>
+            <Text style={[styles.buildingMenuTitle, { color: isDark ? '#fff' : '#0f172a' }]}>
+              Choisir un PDF
+            </Text>
+            <ScrollView style={{ maxHeight: 360 }} contentContainerStyle={{ gap: 8 }}>
+              {planPdfOptions.map((pdf, index) => (
+                <View
+                  key={`${pdf.documentId || pdf.uri || pdf.name}-${index}`}
+                  style={[styles.pdfPickerRow, { backgroundColor: isDark ? '#374151' : '#eff6ff' }]}
+                >
+                  <TouchableOpacity
+                    onPress={() => openPlanPdfOption(pdf)}
+                    style={{ flex: 1, gap: 4 }}
+                  >
+                    <Text style={[styles.buildingMenuCloseText, { color: isDark ? '#fff' : '#0f172a', fontWeight: '700' }]}>
+                      {pdf.name}
+                    </Text>
+                    <Text style={{ color: isDark ? '#cbd5e1' : '#64748b', fontSize: 12 }}>
+                      {new Date(pdf.importedAt).toLocaleString()} {pdf.remoteOnly ? '• serveur' : '• local'}
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => deletePlanPdfOption(pdf)}
+                    style={styles.pdfDeleteButton}
+                  >
+                    <Text style={styles.pdfDeleteText}>Supprimer</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </ScrollView>
+            <TouchableOpacity
+              onPress={() => setShowPlanPdfPicker(false)}
+              style={[styles.buildingMenuAction, { backgroundColor: isDark ? '#374151' : '#e2e8f0' }]}
+            >
+              <Text style={[styles.buildingMenuCloseText, { color: isDark ? '#fff' : '#0f172a' }]}>Annuler</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={showAppointmentModal} transparent animationType="fade" onRequestClose={() => setShowAppointmentModal(false)}>
+        <View style={styles.menuOverlay}>
+          <View style={[styles.buildingMenu, { backgroundColor: isDark ? '#1f2937' : '#fff' }]}>
+            <Text style={[styles.buildingMenuTitle, { color: isDark ? '#fff' : '#0f172a' }]}>
+              Prendre rendez-vous
+            </Text>
+            <Text style={[styles.appointmentPickerLabel, { color: isDark ? '#cbd5e1' : '#475569' }]}>Date</Text>
+            <TouchableOpacity
+              onPress={() => setShowSystemDatePicker(true)}
+              style={[styles.systemPickerButton, { backgroundColor: isDark ? '#374151' : '#f8fafc', borderColor: isDark ? '#4b5563' : '#e2e8f0' }]}
+            >
+              <Text style={[styles.systemPickerValue, { color: isDark ? '#fff' : '#0f172a' }]}>
+                {appointmentDate || 'Choisir une date'}
+              </Text>
+              <Text style={{ color: isDark ? '#cbd5e1' : '#64748b', fontWeight: '800' }}>Calendrier</Text>
+            </TouchableOpacity>
+            {showSystemDatePicker ? (
+              <DateTimePicker
+                value={parseAppointmentDateTime(appointmentDate, appointmentTime)}
+                mode="date"
+                display={Platform.OS === 'ios' ? 'inline' : 'default'}
+                minimumDate={new Date()}
+                onChange={onSystemDateChange}
+              />
+            ) : null}
+            <Text style={[styles.appointmentPickerLabel, { color: isDark ? '#cbd5e1' : '#475569' }]}>Heure</Text>
+            <TouchableOpacity
+              onPress={() => setShowSystemTimePicker(true)}
+              style={[styles.systemPickerButton, { backgroundColor: isDark ? '#374151' : '#f8fafc', borderColor: isDark ? '#4b5563' : '#e2e8f0' }]}
+            >
+              <Text style={[styles.systemPickerValue, { color: isDark ? '#fff' : '#0f172a' }]}>
+                {appointmentTime || 'Choisir une heure'}
+              </Text>
+              <Text style={{ color: isDark ? '#cbd5e1' : '#64748b', fontWeight: '800' }}>Horloge</Text>
+            </TouchableOpacity>
+            {showSystemTimePicker ? (
+              <DateTimePicker
+                value={parseAppointmentDateTime(appointmentDate, appointmentTime)}
+                mode="time"
+                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                is24Hour
+                onChange={onSystemTimeChange}
+              />
+            ) : null}
+            <TextInput
+              value={appointmentNote}
+              onChangeText={setAppointmentNote}
+              placeholder="Note optionnelle"
+              placeholderTextColor={isDark ? '#9ca3af' : '#64748b'}
+              multiline
+              style={[styles.statusInput, { minHeight: 72, textAlignVertical: 'top', color: isDark ? '#fff' : '#0f172a', borderColor: isDark ? '#374151' : '#cbd5e1' }]}
+            />
+            <TouchableOpacity onPress={saveAppointment} style={[styles.buildingMenuAction, { backgroundColor: '#7c3aed' }]}>
+              <Text style={styles.buildingMenuActionText}>Enregistrer rendez-vous</Text>
+            </TouchableOpacity>
+            {appointment ? (
+              <TouchableOpacity onPress={deleteAppointment} style={[styles.buildingMenuAction, { backgroundColor: '#dc2626' }]}>
+                <Text style={styles.buildingMenuActionText}>Supprimer rendez-vous</Text>
+              </TouchableOpacity>
+            ) : null}
+            <TouchableOpacity
+              onPress={() => setShowAppointmentModal(false)}
+              style={[styles.buildingMenuAction, { backgroundColor: isDark ? '#374151' : '#e2e8f0' }]}
+            >
+              <Text style={[styles.buildingMenuCloseText, { color: isDark ? '#fff' : '#0f172a' }]}>Annuler</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={showPlanningModal} transparent animationType="fade" onRequestClose={() => setShowPlanningModal(false)}>
+        <View style={styles.menuOverlay}>
+          <View style={[styles.buildingMenu, { backgroundColor: isDark ? '#1f2937' : '#fff', maxHeight: '75%' }]}>
+            <Text style={[styles.buildingMenuTitle, { color: isDark ? '#fff' : '#0f172a' }]}>
+              {currentUserRole === 'manager' ? 'Planning rendez-vous' : 'Mes rendez-vous'} ({planningAppointments.length})
+            </Text>
+            <ScrollView style={{ maxHeight: 420 }} contentContainerStyle={{ gap: 8 }}>
+              {planningAppointments.length === 0 ? (
+                <Text style={{ color: isDark ? '#cbd5e1' : '#64748b', fontWeight: '700' }}>
+                  Aucun rendez-vous enregistré.
+                </Text>
+              ) : (
+                planningAppointments.map((item, index) => (
+                  <View
+                    key={`${item.buildingKey || item.buildingName || index}-${item.updatedAt}`}
+                    style={[styles.planningRow, { backgroundColor: isDark ? '#374151' : '#f8fafc', borderColor: isDark ? '#4b5563' : '#e2e8f0' }]}
+                  >
+                    <Text style={[styles.planningDate, { color: isDark ? '#fff' : '#0f172a' }]}>
+                      {item.date} à {item.time}
+                    </Text>
+                    <Text style={{ color: isDark ? '#dbeafe' : '#1d4ed8', fontWeight: '800' }}>
+                      {item.buildingName || 'Immeuble'}
+                    </Text>
+                    {item.zone ? (
+                      <Text style={{ color: isDark ? '#cbd5e1' : '#64748b', fontSize: 12 }}>Zone : {item.zone}</Text>
+                    ) : null}
+                    {currentUserRole === 'manager' && item.createdByName ? (
+                      <Text style={{ color: isDark ? '#cbd5e1' : '#64748b', fontSize: 12 }}>Créé par : {item.createdByName}</Text>
+                    ) : null}
+                    {item.note ? (
+                      <Text style={{ color: isDark ? '#cbd5e1' : '#64748b', fontSize: 12 }}>{item.note}</Text>
+                    ) : null}
+                  </View>
+                ))
+              )}
+            </ScrollView>
+            <TouchableOpacity
+              onPress={() => setShowPlanningModal(false)}
+              style={[styles.buildingMenuAction, { backgroundColor: isDark ? '#374151' : '#e2e8f0' }]}
+            >
+              <Text style={[styles.buildingMenuCloseText, { color: isDark ? '#fff' : '#0f172a' }]}>Fermer</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
       <Modal visible={showBuildingMenu} transparent animationType="fade" onRequestClose={() => setShowBuildingMenu(false)}>
         <TouchableOpacity
           activeOpacity={1}
@@ -1414,8 +2050,8 @@ export default function DetailImmeubleScreen() {
           style={styles.menuOverlay}
         >
           <TouchableOpacity activeOpacity={1} style={[styles.buildingMenu, { backgroundColor: isDark ? '#1f2937' : '#fff' }]}>
-            <Text style={[styles.buildingMenuTitle, { color: isDark ? '#fff' : '#0f172a' }]}>
-              {buildingName || buildingsData[0]?.idImmeuble || 'Immeuble'}
+            <Text style={[{ textAlign: 'center'},styles.buildingMenuTitle, { color: isDark ? '#fff' : '#0f172a' }]}>
+              { buildingsData[0]?.idImmeuble || 'Immeuble'}
             </Text>
             <TouchableOpacity
               onPress={async () => {
@@ -1436,6 +2072,20 @@ export default function DetailImmeubleScreen() {
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
+              onPress={openAppointmentModal}
+              style={[styles.buildingMenuAction, { backgroundColor: '#7c3aed' }]}
+            >
+              <Text style={styles.buildingMenuActionText}>
+                {appointment ? 'Modifier rendez-vous' : 'Prendre rendez-vous'}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={openPlanningModal}
+              style={[styles.buildingMenuAction, { backgroundColor: '#4338ca' }]}
+            >
+              <Text style={styles.buildingMenuActionText}>Planning rendez-vous</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
               onPress={() => {
                 setShowBuildingMenu(false);
                 router.push({
@@ -1451,6 +2101,12 @@ export default function DetailImmeubleScreen() {
               style={[styles.buildingMenuAction, { backgroundColor: '#0f766e' }]}
             >
               <Text style={styles.buildingMenuActionText}>Afficher carte KMZ</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={openPlanTirageFusionPdf}
+              style={[styles.buildingMenuAction, { backgroundColor: '#b45309' }]}
+            >
+              <Text style={styles.buildingMenuActionText}>Afficher PDF plan tirage et fusion</Text>
             </TouchableOpacity>
             <TouchableOpacity
               onPress={archiveCurrentBuilding}
@@ -1470,7 +2126,13 @@ export default function DetailImmeubleScreen() {
 
       {Platform.OS === 'web' ? (
         <>
-          <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false} horizontal>
+          <ScrollView
+            style={styles.scrollView}
+            showsVerticalScrollIndicator={false}
+            horizontal
+            onScroll={handleDetailScroll}
+            scrollEventThrottle={16}
+          >
             <View style={styles.tableContainer}>
               {renderTableHeader()}
               {buildingsData.map((building, index) => renderBuildingRow(building, index))}
@@ -1576,7 +2238,12 @@ export default function DetailImmeubleScreen() {
           </Modal>
         </>
       ) : (
-        <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
+        <ScrollView
+          style={styles.scrollView}
+          showsVerticalScrollIndicator={false}
+          onScroll={handleDetailScroll}
+          scrollEventThrottle={16}
+        >
           <View style={styles.section}>
             <Text style={[styles.sectionTitle, { color: isDark ? '#fff' : '#000' }]}>
               Informations Générales
@@ -1585,6 +2252,12 @@ export default function DetailImmeubleScreen() {
             {renderInputField('ID Immeuble Système', 'idImmeubleSysteme')}
             {renderInputField('Ville', 'ville')}
             {renderInputField('Code Postal', 'codePostal')}
+          </View>
+
+          <View style={styles.section}>
+            <Text style={[styles.sectionTitle, { color: isDark ? '#fff' : '#000' }]}>
+              Adresse et Localisation
+            </Text>
             <View style={styles.inputGroup}>
               <Text style={[styles.label, { color: isDark ? '#fff' : '#000' }]}>Longitude</Text>
               <View style={styles.gpsInputContainer}>
@@ -1637,12 +2310,6 @@ export default function DetailImmeubleScreen() {
                 </TouchableOpacity>
               </View>
             </View>
-          </View>
-
-          <View style={styles.section}>
-            <Text style={[styles.sectionTitle, { color: isDark ? '#fff' : '#000' }]}>
-              Adresse et Localisation
-            </Text>
             {renderInputField('Rue Nom & Nom', 'rueNomNom')}
             {renderInputField('N°/Nom Immeuble', 'numeroNomImmeuble')}
           </View>
@@ -1928,6 +2595,16 @@ export default function DetailImmeubleScreen() {
           <View style={styles.bottomSpacing} />
         </ScrollView>
       )}
+      <Animated.View
+        {...floatingMenuPanResponder.panHandlers}
+        style={[
+          styles.floatingMenuButton,
+          { backgroundColor: isDark ? 'rgba(30, 41, 59, 0.88)' : 'rgba(148, 163, 184, 0.32)' },
+          { transform: floatingMenuPosition.getTranslateTransform() },
+        ]}
+      >
+        <Text style={[styles.floatingMenuButtonText, { color: isDark ? '#fff' : '#0f172a' }]}>⋮</Text>
+      </Animated.View>
     </View>
     </PanGestureHandler>
     </GestureHandlerRootView>
@@ -1969,10 +2646,107 @@ const styles = StyleSheet.create({
     fontSize: 26,
     fontWeight: '700',
   },
+  floatingMenuButton: {
+    position: 'absolute',
+    right: 18,
+    bottom: 96,
+    width: MENU_FLOATING_BUTTON_SIZE,
+    height: MENU_FLOATING_BUTTON_SIZE,
+    borderRadius: MENU_FLOATING_BUTTON_SIZE / 2,
+    borderWidth: 1,
+    borderColor: 'rgba(226, 232, 240, 0.92)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#0f172a',
+    shadowOpacity: 0.28,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 12,
+    zIndex: 60,
+  },
+  floatingMenuButtonText: {
+    fontSize: 30,
+    lineHeight: 34,
+    fontWeight: '900',
+    marginTop: -4,
+  },
   statusSelectorContainer: {
     paddingHorizontal: 20,
     paddingBottom: 10,
     zIndex: 20,
+  },
+  appointmentBanner: {
+    marginHorizontal: 20,
+    marginBottom: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 12,
+    gap: 3,
+  },
+  appointmentTitle: {
+    fontSize: 12,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  appointmentText: {
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  appointmentNote: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  appointmentPickerLabel: {
+    fontSize: 12,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    marginTop: 4,
+  },
+  systemPickerButton: {
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 4,
+  },
+  systemPickerValue: {
+    fontSize: 18,
+    fontWeight: '900',
+  },
+  appointmentChipRow: {
+    gap: 8,
+    paddingVertical: 4,
+  },
+  appointmentChip: {
+    minWidth: 104,
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 2,
+  },
+  appointmentTimeGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  appointmentTimeChip: {
+    minWidth: 72,
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  planningRow: {
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 12,
+    gap: 4,
+  },
+  planningDate: {
+    fontSize: 15,
+    fontWeight: '900',
   },
   statusSelectorLabel: {
     fontSize: 12,
@@ -2032,14 +2806,6 @@ const styles = StyleSheet.create({
     paddingVertical: 13,
     backgroundColor: '#eff6ff',
   },
-  statusAddButtonAlways: {
-    marginTop: 8,
-    borderRadius: 10,
-    backgroundColor: '#eff6ff',
-    paddingHorizontal: 14,
-    paddingVertical: 11,
-    alignItems: 'center',
-  },
   statusAddText: {
     color: '#2563eb',
     fontWeight: '700',
@@ -2097,6 +2863,24 @@ const styles = StyleSheet.create({
   buildingMenuCloseText: {
     fontWeight: '700',
     textAlign: 'center',
+  },
+  pdfPickerRow: {
+    borderRadius: 10,
+    padding: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  pdfDeleteButton: {
+    borderRadius: 8,
+    backgroundColor: '#fee2e2',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  pdfDeleteText: {
+    color: '#dc2626',
+    fontSize: 12,
+    fontWeight: '800',
   },
   scrollView: {
     flex: 1,

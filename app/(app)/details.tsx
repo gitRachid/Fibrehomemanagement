@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 
 import { View, Text, FlatList, StyleSheet, RefreshControl, TouchableOpacity, ActivityIndicator, TextInput, Modal, Alert, ScrollView } from 'react-native';
 
@@ -15,6 +15,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useColorScheme } from 'react-native';
 
 import { buildingsApi } from '../../src/api/buildings';
+import { useAuth } from '@/ctx';
 
 
 
@@ -92,7 +93,6 @@ export default function DetailsScreen() {
 
   const { service, serviceName } = useLocalSearchParams<{ service: string; serviceName?: string }>();
 
-  console.log('[DETAILS] Service ID:', service, 'Service Name:', serviceName);
 
   const router = useRouter();
 
@@ -101,22 +101,21 @@ export default function DetailsScreen() {
   const colorScheme = useColorScheme();
 
   const isDark = colorScheme === 'dark';
+  const { user } = useAuth();
 
 
 
-  // Role management state
+  const currentUser = useMemo<User>(() => ({
 
-  const [currentUser, setCurrentUser] = useState<User>({
+    id: user?.id || user?.sub || 'user1',
 
-    id: 'user1',
+    name: user?.name || user?.email || 'Utilisateur',
 
-    name: 'Manager Test',
+    role: user?.role || 'technician',
 
-    role: 'manager',
+    email: user?.email || ''
 
-    email: 'manager@test.com'
-
-  });
+  }), [user]);
 
   const [technicians, setTechnicians] = useState<Technician[]>([
 
@@ -248,15 +247,6 @@ export default function DetailsScreen() {
 
       case 'Détails':
 
-        console.log('[DETAILS] Navigating to infoImmeuble with:', { 
-
-          itemId: selectedItemForAction?.id, 
-
-          itemName: selectedItemForAction?.name,
-
-          selectedItemForAction 
-
-        });
 
         if (!selectedItemForAction?.id) {
 
@@ -331,7 +321,6 @@ export default function DetailsScreen() {
 
     try {
 
-      console.log('📁 Starting import, file path:', importFilePath);
 
       // Read the Excel file
 
@@ -341,14 +330,12 @@ export default function DetailsScreen() {
 
       });
 
-      console.log('📄 File read, base64 length:', fileContent.length);
 
 
       // Parse Excel
 
       const workbook = XLSX.read(fileContent, { type: 'base64' });
 
-      console.log('📊 Workbook sheets:', workbook.SheetNames);
 
       const firstSheetName = workbook.SheetNames[0];
 
@@ -356,7 +343,6 @@ export default function DetailsScreen() {
 
       const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
 
-      console.log('📋 Parsed rows:', jsonData.length);
 
 
       if (jsonData.length < 2) {
@@ -374,7 +360,6 @@ export default function DetailsScreen() {
 
       const headers = jsonData[0] as string[];
 
-      console.log('🏷️ Headers found:', headers);
 
 
       // Map Excel columns to Building fields
@@ -401,7 +386,6 @@ export default function DetailsScreen() {
 
         if (i === 1) {
 
-          console.log('🔍 First building serviceId:', service, 'itemId:', service);
 
         }
 
@@ -643,11 +627,9 @@ export default function DetailsScreen() {
 
           buildings.push(building);
 
-          console.log('✅ Building valid:', building.idImmeuble);
 
         } else {
 
-          console.log('❌ Building invalid - id:', building.idImmeuble, 'sys:', building.idImmeubleSysteme, 'ville:', building.ville);
 
         }
 
@@ -655,7 +637,6 @@ export default function DetailsScreen() {
 
       
 
-      console.log('🏢 Total buildings found:', buildings.length);
 
       
 
@@ -681,7 +662,6 @@ export default function DetailsScreen() {
 
       
 
-      console.log('🚀 Starting API import for', buildings.length, 'buildings');
 
       
 
@@ -689,13 +669,11 @@ export default function DetailsScreen() {
 
         try {
 
-          console.log('📤 Creating building:', building.idImmeuble);
 
           await buildingsApi.create(building);
 
           successCount++;
 
-          console.log('✅ Created:', building.idImmeuble);
 
         } catch (error: any) {
 
@@ -703,7 +681,6 @@ export default function DetailsScreen() {
 
           const errorMsg = error.message || error.response?.data?.message || 'Erreur API';
 
-          console.log('❌ Error creating', building.idImmeuble, ':', errorMsg);
 
           
 
@@ -727,7 +704,6 @@ export default function DetailsScreen() {
 
       
 
-      console.log('📊 Import complete:', successCount, 'success,', errorCount, 'errors');
 
       
 
@@ -759,7 +735,6 @@ export default function DetailsScreen() {
 
               await queryClient.invalidateQueries({ queryKey: ['buildings'] });
 
-              console.log('🔄 Cache invalidated, navigating to building list');
 
               // Navigate to infoImmeuble to see the list
 
@@ -893,7 +868,6 @@ export default function DetailsScreen() {
 
             onPress: () => {
 
-              console.log('Archiving items:', selectedItemsForArchive);
 
               setSelectedItemsForArchive([]);
 
@@ -1071,7 +1045,6 @@ export default function DetailsScreen() {
 
         onPress={() => {
 
-          console.log('[DETAILS] Item pressed:', { id: item.id, name: item.name, canAccess: canAccessItem(item) });
 
           if (isArchiveMode) {
 
@@ -1079,7 +1052,6 @@ export default function DetailsScreen() {
 
           } else if (canAccessItem(item)) {
 
-            console.log('[DETAILS] Navigating to infoImmeuble with:', { itemId: item.id, itemName: item.name });
 
             router.push({
 
@@ -1091,7 +1063,6 @@ export default function DetailsScreen() {
 
           } else {
 
-            console.log('[DETAILS] Access denied for item:', item.id);
 
           }
 

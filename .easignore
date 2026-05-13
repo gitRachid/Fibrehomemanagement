@@ -1,0 +1,6 @@
+backendfiber/uploads/
+backups/
+deploy/env/
+*.xlsx
+~$*.xlsx
+*.before-restamp

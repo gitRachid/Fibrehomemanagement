@@ -3,10 +3,21 @@ import { jwtDecode } from 'jwt-decode';
 import { registerTokenGetter } from '@/api/client';
 import { secureStorage } from '@/lib/storage';
 
+type UserRole = 'technician' | 'supervisor' | 'manager';
+
+export interface AuthUser {
+  id?: string;
+  sub?: string;
+  name?: string;
+  email?: string;
+  role: UserRole;
+}
+
 interface AuthContextType {
   isAuthenticated: boolean;
   isLoading: boolean;
   token: string | null;
+  user: AuthUser | null;
   login: (token: string) => Promise<void>;
   logout: () => Promise<void>;
 }
@@ -21,10 +32,26 @@ export const useAuth = () => {
   return context;
 };
 
+const decodeUser = (rawToken: string): AuthUser | null => {
+  try {
+    const decoded = jwtDecode<AuthUser & { exp?: number }>(rawToken);
+    return {
+      id: decoded.id || decoded.sub,
+      sub: decoded.sub,
+      name: decoded.name,
+      email: decoded.email,
+      role: decoded.role || 'technician',
+    };
+  } catch {
+    return null;
+  }
+};
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [token, setToken] = useState<string | null>(null);
+  const [user, setUser] = useState<AuthUser | null>(null);
 
   const getStoredToken = () => secureStorage.getToken();
   const saveToken = (newToken: string) => secureStorage.setToken(newToken);
@@ -47,10 +74,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             const currentTime = Date.now() / 1000;
             if (decoded.exp && decoded.exp > currentTime) {
               setToken(storedToken);
+              setUser(decodeUser(storedToken));
               setIsAuthenticated(true);
             } else if (!decoded.exp) {
               // Token without expiry - accept it
               setToken(storedToken);
+              setUser(decodeUser(storedToken));
               setIsAuthenticated(true);
             } else {
               await removeToken();
@@ -71,6 +100,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       await saveToken(newToken);
       setToken(newToken);
+      setUser(decodeUser(newToken));
       setIsAuthenticated(true);
     } catch (error) {
       console.error('[AUTH] Error storing token:', error);
@@ -81,6 +111,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       await removeToken();
       setToken(null);
+      setUser(null);
       setIsAuthenticated(false);
     } catch (error) {
       console.error('[AUTH] Error removing token:', error);
@@ -92,8 +123,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const value = useMemo(
-    () => ({ isAuthenticated, isLoading, token, login, logout }),
-    [isAuthenticated, isLoading, token]
+    () => ({ isAuthenticated, isLoading, token, user, login, logout }),
+    [isAuthenticated, isLoading, token, user]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

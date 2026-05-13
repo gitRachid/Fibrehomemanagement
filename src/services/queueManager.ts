@@ -53,8 +53,7 @@ export class QueueManager {
       try {
         const parsed = JSON.parse(raw) as QueueItem[];
         this.queue = Array.isArray(parsed) ? parsed : [];
-      } catch (error) {
-        console.warn('Invalid queue payload in storage, starting with an empty queue', error);
+      } catch {
         this.queue = [];
       }
     }

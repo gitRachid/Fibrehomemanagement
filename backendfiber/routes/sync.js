@@ -89,7 +89,7 @@ router.post('/', async (req, res) => {
             break;
 
           default:
-            console.log('Unknown change type:', change.type);
+            break;
         }
       } catch (error) {
         const bucket = change.type === 'assignment' ? results.assignments.errors : results.buildings.errors;

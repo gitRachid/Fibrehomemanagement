@@ -3,6 +3,7 @@ import { ActivityIndicator, Animated, Easing, Pressable, Text, View } from 'reac
 import { Link, Redirect, useRouter } from 'expo-router';
 import { AppTextInput } from '@/components/app-text-input';
 import { authApi } from '@/api';
+import { API_BASE_URL } from '@/api/client';
 import { useAuth } from '@/ctx';
 
 export default function SignInScreen() {
@@ -13,8 +14,7 @@ export default function SignInScreen() {
   const [password, setPassword] = useState('');
   const [errors, setErrors] = useState<{ email?: string; password?: string; generic?: string }>({});
   const [submitting, setSubmitting] = useState(false);
-
-  if (isAuthenticated) return <Redirect href="/(app)/selection" />;
+  const [apiStatus, setApiStatus] = useState('');
 
   useEffect(() => {
     const animation = Animated.loop(
@@ -42,6 +42,8 @@ export default function SignInScreen() {
     outputRange: ['0deg', '360deg'],
   });
 
+  if (isAuthenticated) return <Redirect href="/(app)/selection" />;
+
   const validate = () => {
     const nextErrors: typeof errors = {};
     if (!email.includes('@')) nextErrors.email = 'Veuillez saisir une adresse e-mail valide';
@@ -67,6 +69,17 @@ export default function SignInScreen() {
     }
   };
 
+  const testApiConnection = async () => {
+    setApiStatus('Test API...');
+    try {
+      const response = await fetch(`${API_BASE_URL}/health`);
+      const text = await response.text();
+      setApiStatus(`API ${response.status}: ${API_BASE_URL} ${text.slice(0, 60)}`);
+    } catch (error: any) {
+      setApiStatus(`Erreur API: ${API_BASE_URL} - ${error?.message || 'Network request failed'}`);
+    }
+  };
+
   return (
     <View style={{ flex: 1, justifyContent: 'center', backgroundColor: '#eef2f8', padding: 20 }}>
       <View style={{ borderRadius: 20, borderWidth: 1, borderColor: '#dbe2ef', backgroundColor: '#fff', padding: 20, gap: 14 }}>
@@ -80,8 +93,8 @@ export default function SignInScreen() {
             transform: [{ perspective: 1000 }, { rotateY: logoRotateY }],
           }}
         />
-        <Text style={{ color: '#2563eb', fontWeight: '700', fontSize: 12, textTransform: 'uppercase' }}>Suivi technicien terrain</Text>
-        <Text style={{ color: '#0f172a', fontWeight: '700', fontSize: 30 }}>Connexion</Text>
+        <Text style={{ color: '#2563eb', fontWeight: '700', fontSize: 12, textTransform: 'uppercase', textAlign: 'center' }}>Suivi technicien terrain</Text>
+        <Text style={{ color: '#0f172a', fontWeight: '700', fontSize: 30, textAlign: 'center' }}>Connexion</Text>
         <Text style={{ color: '#64748b', fontSize: 14 }}>Accédez au suivi opérationnels et aux affectations.</Text>
 
         <AppTextInput
@@ -102,6 +115,7 @@ export default function SignInScreen() {
         />
 
         {errors.generic ? <Text style={{ color: '#dc2626', fontSize: 13 }}>{errors.generic}</Text> : null}
+        {apiStatus ? <Text style={{ color: apiStatus.startsWith('API 200') ? '#16a34a' : '#dc2626', fontSize: 12 }}>{apiStatus}</Text> : null}
 
         <Pressable
           onPress={onSubmit}
@@ -109,6 +123,12 @@ export default function SignInScreen() {
           style={{ backgroundColor: '#2563eb', borderRadius: 12, alignItems: 'center', justifyContent: 'center', paddingVertical: 13 }}
         >
           {submitting ? <ActivityIndicator color="#fff" /> : <Text style={{ color: '#fff', fontWeight: '700' }}>Se connecter</Text>}
+        </Pressable>
+        <Pressable
+          onPress={testApiConnection}
+          style={{ borderRadius: 12, borderWidth: 1, borderColor: '#cbd5e1', alignItems: 'center', justifyContent: 'center', paddingVertical: 11 }}
+        >
+          <Text style={{ color: '#0f172a', fontWeight: '700' }}>Tester connexion serveur</Text>
         </Pressable>
         <Link href="/register" asChild>
           <Pressable style={{ alignItems: 'center', paddingVertical: 6 }}>

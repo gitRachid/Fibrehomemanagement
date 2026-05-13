@@ -12,11 +12,6 @@ const upload = multer({
   fileFilter: (req, file, cb) => {
     const fileName = file.originalname.toLowerCase();
     const isKmz = fileName.endsWith('.kmz') || file.mimetype === 'application/vnd.google-earth.kmz';
-    console.log('[KMZ_IMPORT][BACKEND] file filter', {
-      fileName: file.originalname,
-      mimeType: file.mimetype,
-      accepted: isKmz,
-    });
     cb(isKmz ? null : new Error('Only KMZ files are allowed'), isKmz);
   },
 });
@@ -137,33 +132,18 @@ const extractKmzFeatures = async (buffer) => {
   const placemarks = collectPlacemarks(parsed);
   const features = placemarks.flatMap((placemark, index) => placemarkToFeatures(placemark, index));
   const firstCoordinate = features.find((feature) => feature.coordinates?.[0])?.coordinates?.[0];
-  console.log('[KMZ_FEATURES][BACKEND] parsed features', {
-    kmlFileName,
-    placemarks: placemarks.length,
-    features: features.length,
-    firstCoordinate,
-  });
   return features;
 };
 
 router.post('/import', upload.single('kmz'), async (req, res) => {
   try {
-    console.log('[KMZ_IMPORT][BACKEND] request received', {
-      zone: req.body?.zone,
-      hasFile: Boolean(req.file),
-      fileName: req.file?.originalname,
-      mimeType: req.file?.mimetype,
-      fileSize: req.file?.size,
-    });
 
     if (!req.file) {
-      console.warn('[KMZ_IMPORT][BACKEND] rejected: no file uploaded');
       return res.status(400).json({ success: false, message: 'No KMZ file uploaded' });
     }
 
     const zone = cleanValue(req.body.zone);
     if (!zone) {
-      console.warn('[KMZ_IMPORT][BACKEND] rejected: missing zone');
       return res.status(400).json({ success: false, message: 'Zone is required' });
     }
 
@@ -173,12 +153,6 @@ router.post('/import', upload.single('kmz'), async (req, res) => {
       mimeType: req.file.mimetype,
       fileSize: req.file.size,
       fileData: req.file.buffer,
-    });
-    console.log('[KMZ_IMPORT][BACKEND] document created', {
-      importId: document._id,
-      zone: document.zone,
-      fileName: document.fileName,
-      fileSize: document.fileSize,
     });
 
     return res.status(201).json({
@@ -203,7 +177,6 @@ router.post('/import', upload.single('kmz'), async (req, res) => {
 
 router.get('/zone/:zone', async (req, res) => {
   try {
-    console.log('[KMZ_IMPORT][BACKEND] list by zone', { zone: req.params.zone });
     const files = await KmzImport.find({ zone: req.params.zone })
       .select('-fileData')
       .sort({ importedAt: -1 });

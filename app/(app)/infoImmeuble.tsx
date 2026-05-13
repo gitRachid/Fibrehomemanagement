@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, FlatList, StyleSheet, TouchableOpacity, ActivityIndicator, Modal, ScrollView, Alert, RefreshControl, TextInput } from 'react-native';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { View, Text, FlatList, StyleSheet, TouchableOpacity, ActivityIndicator, Modal, ScrollView, Alert, RefreshControl, TextInput, Animated } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useColorScheme } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
@@ -11,6 +11,7 @@ import { useBuildings, useTechnicians, useCreateAssignment, useBulkCreateAssignm
 import { dataService } from '@/services/dataService';
 import { Building as ApiBuilding, Technician as ApiTechnician, buildingsApi, technicalDossiersApi } from '@/api';
 import { saveFileWithPicker } from '@/utils/saveFileWithPicker';
+import { useAuth } from '@/ctx';
 
 // Local Building interface mapped from API
 interface Building {
@@ -50,19 +51,14 @@ export default function InfoImmeubleScreen() {
   const queryClient = useQueryClient();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
+  const { user } = useAuth();
 
-  // Debug logging
-  useEffect(() => {
-    console.log('[INFO_IMMEUBLE] Params received:', { itemId, itemName, zone, importExcel });
-  }, [itemId, itemName, zone, importExcel]);
-
-  // Role management state
-  const [currentUser, setCurrentUser] = useState<User>({
-    id: 'user1',
-    name: 'Manager Test',
-    role: 'manager',
-    email: 'manager@test.com'
-  });
+  const currentUser = useMemo<User>(() => ({
+    id: user?.id || user?.sub || 'user1',
+    name: user?.name || user?.email || 'Utilisateur',
+    role: user?.role || 'technician',
+    email: user?.email || '',
+  }), [user]);
   const { data: apiTechnicians, isLoading: isLoadingTechs } = useTechnicians({ status: 'active' });
   const technicians: ApiTechnician[] = apiTechnicians || [];
   const [showActionSheet, setShowActionSheet] = useState(false);
@@ -84,6 +80,43 @@ export default function InfoImmeubleScreen() {
   const [statusFilter, setStatusFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [isExportingTechnicalDossier, setIsExportingTechnicalDossier] = useState(false);
+  const headerOffset = useRef(new Animated.Value(0)).current;
+  const topControlsOffset = useRef(new Animated.Value(0)).current;
+  const lastScrollOffsetRef = useRef(0);
+  const isHeaderHiddenRef = useRef(false);
+
+  const animateHeaderVisibility = (hidden: boolean) => {
+    if (isHeaderHiddenRef.current === hidden) return;
+    isHeaderHiddenRef.current = hidden;
+    Animated.parallel([
+      Animated.timing(headerOffset, {
+        toValue: hidden ? -76 : 0,
+        duration: hidden ? 360 : 280,
+        useNativeDriver: true,
+      }),
+      Animated.timing(topControlsOffset, {
+        toValue: hidden ? -140 : 0,
+        duration: hidden ? 360 : 280,
+        useNativeDriver: false,
+      }),
+    ]).start();
+  };
+
+  const handleListScroll = (event: any) => {
+    const currentOffset = Math.max(0, event.nativeEvent.contentOffset?.y || 0);
+    const previousOffset = lastScrollOffsetRef.current;
+    const delta = currentOffset - previousOffset;
+
+    if (currentOffset < 8) {
+      animateHeaderVisibility(false);
+    } else if (delta > 8) {
+      animateHeaderVisibility(true);
+    } else if (delta < -12) {
+      animateHeaderVisibility(false);
+    }
+
+    lastScrollOffsetRef.current = currentOffset;
+  };
 
   const selectedZone = typeof zone === 'string' ? zone.trim() : '';
   useEffect(() => {
@@ -177,7 +210,6 @@ export default function InfoImmeubleScreen() {
       const result = await dataService.syncData();
       if (result.success) {
         setSyncStatus('synced');
-        console.log('Assignments synced to backend:', assignments);
       } else {
         setSyncStatus('pending');
       }
@@ -472,13 +504,8 @@ export default function InfoImmeubleScreen() {
 
   const exportTechnicalDossier = async (building: Building | null) => {
     const id = building?._id || building?.id || building?.idImmeuble;
-    console.log('[TECHNICAL_DOSSIER_EXPORT][INFO] start', {
-      building,
-      resolvedId: id,
-    });
 
     if (!building || !id) {
-      console.warn('[TECHNICAL_DOSSIER_EXPORT][INFO] no building or id');
       Alert.alert('Erreur', 'Aucun immeuble sélectionné pour exporter le dossier technique.');
       return;
     }
@@ -487,15 +514,9 @@ export default function InfoImmeubleScreen() {
     try {
       const request = await technicalDossiersApi.getDownloadRequest(String(id), building.idImmeuble || building.name);
       const targetUri = `${FileSystem.documentDirectory}${request.fileName}`;
-      console.log('[TECHNICAL_DOSSIER_EXPORT][INFO] download request', {
-        url: request.url,
-        targetUri,
-        hasAuthHeader: Boolean(request.headers.Authorization),
-      });
       const result = await FileSystem.downloadAsync(request.url, targetUri, {
         headers: request.headers,
       });
-      console.log('[TECHNICAL_DOSSIER_EXPORT][INFO] download result', result);
       const savedUri = await saveFileWithPicker(result.uri, request.fileName);
 
       Alert.alert(
@@ -514,10 +535,6 @@ export default function InfoImmeubleScreen() {
   };
 
   const handleActionSheetOption = (option: string) => {
-    console.log('[INFO_IMMEUBLE] action selected', {
-      option,
-      selectedBuildingForAction,
-    });
     setShowActionSheet(false);
     
     switch (option) {
@@ -573,7 +590,6 @@ export default function InfoImmeubleScreen() {
             text: 'Archiver', 
             style: 'destructive',
             onPress: () => {
-              console.log('Archiving buildings:', selectedBuildingsForArchive);
               setSelectedBuildingsForArchive([]);
               setIsArchiveMode(false);
               Alert.alert('Succès', `${selectedBuildingsForArchive.length} immeuble(s) archivé(s)`);
@@ -831,7 +847,11 @@ export default function InfoImmeubleScreen() {
             )}
             
             <View style={styles.buildingTitleContainer}>
-              <Text style={[styles.buildingName, { color: isDark ? '#fff' : '#000' }]}>
+              <Text
+                numberOfLines={1}
+                ellipsizeMode="tail"
+                style={[styles.buildingName, { color: isDark ? '#fff' : '#000' }]}
+              >
                 {item.name}
               </Text>
             </View>
@@ -880,7 +900,19 @@ export default function InfoImmeubleScreen() {
     <GestureHandlerRootView style={{ flex: 1 }}>
     <PanGestureHandler onHandlerStateChange={handleSwipeBack} activeOffsetX={30}>
     <View style={[styles.container, { backgroundColor: isDark ? '#000' : '#fff' }]}>
-      <View style={styles.header}>
+      <Animated.View
+        style={[
+          styles.header,
+          {
+            opacity: headerOffset.interpolate({
+              inputRange: [-76, 0],
+              outputRange: [0, 1],
+              extrapolate: 'clamp',
+            }),
+            transform: [{ translateY: headerOffset }],
+          },
+        ]}
+      >
         <TouchableOpacity onPress={handleBack} style={styles.backButton}>
           <Text style={[styles.backText, { color: isDark ? '#fff' : '#007AFF' }]}>Retour</Text>
         </TouchableOpacity>
@@ -892,7 +924,7 @@ export default function InfoImmeubleScreen() {
             {renderSyncStatus()}
           </View>
         </View>
-      </View>
+      </Animated.View>
       
       {/* Archive Mode Header */}
       {isArchiveMode && currentUser.role === 'manager' && (
@@ -928,13 +960,27 @@ export default function InfoImmeubleScreen() {
         <ActivityIndicator size="large" style={{ flex: 1, justifyContent: 'center' }} />
       ) : (
         <View style={styles.listContainer}>
-          <View style={styles.zoneTitleContainer}>
-            <Text style={[styles.zoneTitle, { color: isDark ? '#fff' : '#000' }]}>
-              Zone : {itemName || selectedZone || 'Toutes les zones'}
-            </Text>
-            <Text style={[styles.zoneSubtitle, { color: isDark ? '#ccc' : '#666' }]}>
-              {filteredData?.length ?? 0} immeuble{(filteredData?.length ?? 0) > 1 ? 's' : ''}
-            </Text>
+          <Animated.View
+            style={[
+              styles.zoneTitleContainer,
+              {
+                opacity: headerOffset.interpolate({
+                  inputRange: [-76, 0],
+                  outputRange: [0, 1],
+                  extrapolate: 'clamp',
+                }),
+                transform: [{ translateY: headerOffset }],
+              },
+            ]}
+          >
+              <Text style={[styles.zoneTitle, { color: isDark ? '#fff' : '#000' }]}>
+                Zone : {itemName || selectedZone || 'Toutes les zones'}
+              </Text>
+              <Text style={[styles.zoneSubtitle, { color: isDark ? '#ccc' : '#666' }]}>
+                {filteredData?.length ?? 0} immeuble{(filteredData?.length ?? 0) > 1 ? 's' : ''}
+              </Text>
+          </Animated.View>
+          <Animated.View style={[styles.zoneControlsContainer, { transform: [{ translateY: topControlsOffset }], marginBottom: topControlsOffset }]}>
             <TextInput
               value={searchQuery}
               onChangeText={setSearchQuery}
@@ -983,13 +1029,15 @@ export default function InfoImmeubleScreen() {
                 </TouchableOpacity>
               ))}
             </ScrollView>
-          </View>
+          </Animated.View>
           {renderHeader()}
           <FlatList
             data={filteredData}
             renderItem={renderBuilding}
             keyExtractor={(item) => item.id}
             contentContainerStyle={styles.list}
+            onScroll={handleListScroll}
+            scrollEventThrottle={16}
             ListEmptyComponent={
               <View style={styles.emptyContainer}>
                 <Text style={[styles.emptyText, { color: isDark ? '#ccc' : '#666' }]}>
@@ -1461,6 +1509,10 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
     alignItems: 'center',
   },
+  zoneControlsContainer: {
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+  },
   zoneTitle: {
     fontSize: 20,
     fontWeight: '700',
@@ -1753,7 +1805,7 @@ const styles = StyleSheet.create({
   },
   buildingAddress: {
     fontSize: 10,
-    marginTop: 5,
+    marginTop: 1,
   },
   emptyContainer: {
     flex: 1,

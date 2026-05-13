@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Alert, Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, Animated, Dimensions, Modal, PanResponder, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system/legacy';
 import { useRouter } from 'expo-router';
 import { jwtDecode } from 'jwt-decode';
 import { Screen } from '@/components/screen';
 import { useBuildings, useTechnicians } from '@/hooks';
 import { dataService } from '@/services/dataService';
-import { buildingsApi, kmzApi, routeOptiqueApi, Technician as ApiTechnician } from '@/api';
+import { buildingsApi, kmzApi, routeOptiqueApi, zoneDocumentsApi, Technician as ApiTechnician } from '@/api';
 import { useAuth } from '@/ctx';
 
 type ZoneRow = { zone: string; label: string; count: number };
@@ -14,10 +15,12 @@ const CUSTOM_ZONES_KEY = 'custom_zones_v1';
 const ARCHIVED_ZONES_KEY = 'archived_zones_v1';
 const ZONE_IMPORT_FILES_KEY = 'zone_import_files_v1';
 const ZONE_TECHNICIAN_ASSIGNMENTS_KEY = 'zone_technician_assignments_v1';
+const FLOATING_BUTTON_SIZE = 62;
 
 type ZoneImportKind = 'kmz' | 'routeOptiqueExcel' | 'planTirageFusionPdf';
 
 type ZoneImportFile = {
+  documentId?: string;
   zone: string;
   kind: ZoneImportKind;
   name: string;
@@ -65,8 +68,18 @@ const getUserIdentityKeys = (user: ApiTechnician) => (
     .filter(Boolean)
 );
 
+const sanitizeFileName = (value: string) => (
+  value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9._-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    || 'document.pdf'
+);
+
 export default function SelectionScreen() {
   const router = useRouter();
+  const screen = Dimensions.get('window');
   const { token } = useAuth();
   const { data: buildings = [], isLoading, isError, refetch } = useBuildings(undefined, { status: 'active' });
   const { data: allTechnicians = [], isLoading: isLoadingAllTechnicians } = useTechnicians({ status: 'all' });
@@ -84,8 +97,46 @@ export default function SelectionScreen() {
   const [isAssigningZone, setIsAssigningZone] = useState(false);
   const [isImportingKmz, setIsImportingKmz] = useState(false);
   const [isImportingRouteOptique, setIsImportingRouteOptique] = useState(false);
+  const [isImportingPlanPdf, setIsImportingPlanPdf] = useState(false);
   const [isArchiving, setIsArchiving] = useState(false);
   const [newZoneName, setNewZoneName] = useState('');
+  const floatingButtonPosition = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
+  const floatingButtonOffset = useRef({ x: 0, y: 0 });
+
+  const floatingButtonPanResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onPanResponderGrant: () => {
+        floatingButtonPosition.setOffset(floatingButtonOffset.current);
+        floatingButtonPosition.setValue({ x: 0, y: 0 });
+      },
+      onPanResponderMove: Animated.event(
+        [null, { dx: floatingButtonPosition.x, dy: floatingButtonPosition.y }],
+        { useNativeDriver: false },
+      ),
+      onPanResponderRelease: (_, gesture) => {
+        const maxX = Math.max(0, screen.width - FLOATING_BUTTON_SIZE - 40);
+        const maxY = Math.max(0, screen.height - FLOATING_BUTTON_SIZE - 130);
+        const next = {
+          x: Math.max(0, Math.min(maxX, floatingButtonOffset.current.x + gesture.dx)),
+          y: Math.max(-maxY, Math.min(40, floatingButtonOffset.current.y + gesture.dy)),
+        };
+
+        floatingButtonPosition.flattenOffset();
+        floatingButtonOffset.current = next;
+        Animated.spring(floatingButtonPosition, {
+          toValue: next,
+          useNativeDriver: false,
+          friction: 6,
+          tension: 90,
+        }).start();
+
+        if (Math.abs(gesture.dx) < 6 && Math.abs(gesture.dy) < 6) {
+          setShowAddZone(true);
+        }
+      },
+    }),
+  ).current;
 
   const currentUser = useMemo<AuthPayload>(() => {
     if (!token) return {};
@@ -239,10 +290,6 @@ export default function SelectionScreen() {
   };
 
   const importKmzToDatabase = async (z: ZoneRow) => {
-    console.log('[KMZ_IMPORT][MOBILE] dedicated menu action pressed', {
-      zone: z.zone,
-      zoneLabel: z.label,
-    });
     Alert.alert('Import KMZ en base', `Choisissez le fichier KMZ pour la zone "${z.label}".`);
 
     setIsImportingKmz(true);
@@ -252,15 +299,6 @@ export default function SelectionScreen() {
         copyToCacheDirectory: true,
       });
 
-      console.log('[KMZ_IMPORT][MOBILE] dedicated picker result', {
-        canceled: result.canceled,
-        assets: result.assets?.map((asset) => ({
-          name: asset.name,
-          mimeType: asset.mimeType,
-          size: asset.size,
-          uri: asset.uri,
-        })),
-      });
 
       if (result.canceled || !result.assets?.length) return;
 
@@ -271,7 +309,6 @@ export default function SelectionScreen() {
         mimeType: file.mimeType,
       });
 
-      console.log('[KMZ_IMPORT][MOBILE] dedicated api response', response);
       setSelectedMenuZone(null);
       Alert.alert(
         'KMZ stocké en base',
@@ -290,11 +327,6 @@ export default function SelectionScreen() {
   };
 
   const pickZoneFile = async (z: ZoneRow, kind: ZoneImportKind) => {
-    console.log('[ZONE_FILE_IMPORT][MOBILE] menu action pressed', {
-      kind,
-      zone: z.zone,
-      zoneLabel: z.label,
-    });
 
     const config = {
       kmz: {
@@ -319,44 +351,66 @@ export default function SelectionScreen() {
       const result = await DocumentPicker.getDocumentAsync({
         type: config.type,
         copyToCacheDirectory: true,
+        multiple: kind === 'planTirageFusionPdf',
       });
 
-      console.log('[ZONE_FILE_IMPORT][MOBILE] picker result', {
-        kind,
-        canceled: result.canceled,
-        assets: result.assets?.map((asset) => ({
-          name: asset.name,
-          mimeType: asset.mimeType,
-          size: asset.size,
-          uri: asset.uri,
-        })),
-      });
 
       if (result.canceled || !result.assets?.length) return;
 
-      const file = result.assets[0];
+      const selectedFiles = result.assets.slice(0, kind === 'planTirageFusionPdf' ? 10 : 1);
+      const file = selectedFiles[0];
 
       if (kind === 'routeOptiqueExcel') {
         setIsImportingRouteOptique(true);
-        console.log('[ROUTE_OPTIQUE_IMPORT][MOBILE] selected file', {
-          zone: z.zone,
-          zoneLabel: z.label,
-          fileName: file.name,
-          uri: file.uri,
-          mimeType: file.mimeType,
-          size: file.size,
-        });
         const response = await routeOptiqueApi.importMobile(z.zone, {
           uri: file.uri,
           name: file.name,
           mimeType: file.mimeType,
         });
-        console.log('[ROUTE_OPTIQUE_IMPORT][MOBILE] api response', response);
 
         setSelectedMenuZone(null);
         Alert.alert(
           'Route optique importée',
           `${response.data.stored} élément${response.data.stored > 1 ? 's' : ''} stocké${response.data.stored > 1 ? 's' : ''} en base sur ${response.data.rows} ligne${response.data.rows > 1 ? 's' : ''} lue${response.data.rows > 1 ? 's' : ''}. Total zone : ${response.data.zoneTotal}. Feuilles : ${response.data.sheets.join(', ')}.`,
+        );
+        return;
+      }
+
+      if (kind === 'planTirageFusionPdf') {
+        setIsImportingPlanPdf(true);
+        const pdfDirectory = `${FileSystem.documentDirectory}zone-documents/`;
+        await FileSystem.makeDirectoryAsync(pdfDirectory, { intermediates: true });
+        const previous = await dataService.loadFromStorage<ZoneImportFile[]>(ZONE_IMPORT_FILES_KEY);
+
+        const importedPdfFiles: ZoneImportFile[] = [];
+        for (const selectedFile of selectedFiles) {
+          const response = await zoneDocumentsApi.importPlanTirageFusionPdf(z.zone, {
+            uri: selectedFile.uri,
+            name: selectedFile.name,
+            mimeType: selectedFile.mimeType,
+          });
+          const localPdfUri = `${pdfDirectory}${Date.now()}_${sanitizeFileName(selectedFile.name)}`;
+          await FileSystem.copyAsync({ from: selectedFile.uri, to: localPdfUri });
+          importedPdfFiles.push({
+            documentId: response.data.documentId,
+            zone: z.zone,
+            kind,
+            name: selectedFile.name,
+            uri: localPdfUri,
+            importedAt: new Date().toISOString(),
+          });
+        }
+
+        const next: ZoneImportFile[] = [
+          ...(Array.isArray(previous) ? previous : []),
+          ...importedPdfFiles,
+        ];
+        await dataService.saveToStorage(ZONE_IMPORT_FILES_KEY, next);
+
+        setSelectedMenuZone(null);
+        Alert.alert(
+          'PDF importé',
+          `${importedPdfFiles.length} fichier${importedPdfFiles.length > 1 ? 's' : ''} PDF stocké${importedPdfFiles.length > 1 ? 's' : ''} en base et sauvegardé${importedPdfFiles.length > 1 ? 's' : ''} localement pour la zone "${z.label}".`,
         );
         return;
       }
@@ -387,6 +441,7 @@ export default function SelectionScreen() {
     } finally {
       if (kind === 'kmz') setIsImportingKmz(false);
       if (kind === 'routeOptiqueExcel') setIsImportingRouteOptique(false);
+      if (kind === 'planTirageFusionPdf') setIsImportingPlanPdf(false);
     }
   };
 
@@ -445,11 +500,14 @@ export default function SelectionScreen() {
   };
 
   return (
-    <Screen
-      title="Zones"
-      subtitle="Choisissez une zone pour voir ses immeubles"
-      loading={isLoading}
-    >
+    <View style={{ flex: 1 }}>
+      <Screen
+        title="Zones" 
+        titleStyle={{ textAlign: 'center' }}
+        subtitle="Choisissez une zone pour voir ses immeubles"
+        subtitleStyle={{ textAlign: 'center' }}
+        loading={isLoading}
+      >
       {isError ? (
         <Pressable
           onPress={() => refetch()}
@@ -533,7 +591,7 @@ export default function SelectionScreen() {
                     event.stopPropagation();
                     setSelectedMenuZone(z);
                   }}
-                  style={{ width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center', backgroundColor: '#f1f5f9' }}
+                  style={{ width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center', backgroundColor: '#f1f5f9' }}
                 >
                   <Text style={{ fontSize: 22, fontWeight: '700', color: '#334155' }}>⋮</Text>
                 </Pressable>
@@ -644,10 +702,6 @@ export default function SelectionScreen() {
             {selectedMenuZone ? (
               <Pressable
                 onPress={() => {
-                  console.log('[KMZ_IMPORT][MOBILE] zone menu button pressed', {
-                    zone: selectedMenuZone.zone,
-                    zoneLabel: selectedMenuZone.label,
-                  });
                   void importKmzToDatabase(selectedMenuZone);
                 }}
                 disabled={isImportingKmz}
@@ -672,9 +726,12 @@ export default function SelectionScreen() {
             {selectedMenuZone ? (
               <Pressable
                 onPress={() => pickZoneFile(selectedMenuZone, 'planTirageFusionPdf')}
-                style={{ borderRadius: 10, backgroundColor: '#b45309', padding: 13 }}
+                disabled={isImportingPlanPdf}
+                style={{ borderRadius: 10, backgroundColor: '#b45309', padding: 13, opacity: isImportingPlanPdf ? 0.6 : 1 }}
               >
-                <Text style={{ color: '#fff', fontWeight: '700' }}>Importer PDF plan Tirage et Fusion</Text>
+                <Text style={{ color: '#fff', fontWeight: '700' }}>
+                  {isImportingPlanPdf ? 'Import PDF...' : 'Importer PDF plan Tirage et Fusion'}
+                </Text>
               </Pressable>
             ) : null}
             {selectedMenuZone ? (
@@ -820,6 +877,34 @@ export default function SelectionScreen() {
           </View>
         </View>
       </Modal>
-    </Screen>
+      </Screen>
+      <Animated.View
+        {...floatingButtonPanResponder.panHandlers}
+        style={[
+          {
+            position: 'absolute',
+            left: 18,
+            bottom: 35,
+            width: FLOATING_BUTTON_SIZE,
+            height: FLOATING_BUTTON_SIZE,
+            borderRadius: FLOATING_BUTTON_SIZE / 2,
+            backgroundColor: 'rgba(114, 125, 140, 0.26)',
+            borderWidth: 5,
+            borderColor: 'rgba(229, 233, 241, 0.92)',
+            alignItems: 'center',
+            justifyContent: 'center',
+            shadowColor: '#f8fafc',
+            shadowOpacity: 0.22,
+            shadowRadius: 1,
+            shadowOffset: { width: 0, height: 1 },
+            elevation: 14,
+            zIndex: 50,
+          },
+          { transform: floatingButtonPosition.getTranslateTransform() },
+        ]}
+      >
+        <Text style={{ color: '#f8fafc', fontSize: 36, lineHeight: 40, fontWeight: '700', marginTop: -2 }}>+</Text>
+      </Animated.View>
+    </View>
   );
 }

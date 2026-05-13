@@ -32,8 +32,8 @@ try {
 if (platformOS !== 'web') {
   try {
     AsyncStorage = require('@react-native-async-storage/async-storage').default;
-  } catch (error) {
-    console.warn('AsyncStorage not available:', error);
+  } catch {
+    AsyncStorage = null;
   }
 }
 
@@ -44,8 +44,7 @@ const Storage = {
     try {
       if (isWeb()) return typeof window !== 'undefined' ? window.localStorage.getItem(key) : null;
       return AsyncStorage ? await AsyncStorage.getItem(key) : null;
-    } catch (error) {
-      console.warn(`Storage getItem failed for key "${key}"`, error);
+    } catch {
       return null;
     }
   },
@@ -56,8 +55,7 @@ const Storage = {
         return;
       }
       if (AsyncStorage) await AsyncStorage.setItem(key, value);
-    } catch (error) {
-      console.warn(`Storage setItem failed for key "${key}"`, error);
+    } catch {
     }
   },
   removeItem: async (key: string): Promise<void> => {
@@ -67,8 +65,7 @@ const Storage = {
         return;
       }
       if (AsyncStorage) await AsyncStorage.removeItem(key);
-    } catch (error) {
-      console.warn(`Storage removeItem failed for key "${key}"`, error);
+    } catch {
     }
   },
 };
@@ -134,9 +131,8 @@ class DataService {
           this.syncData();
         }
       });
-    } catch (error) {
+    } catch {
       this.isOnline = true;
-      console.warn('NetInfo unavailable, network mode defaults to online', error);
     }
   }
 
@@ -202,8 +198,7 @@ class DataService {
       const data = apiListField(response);
       await this.setCache(cacheKey, data, CACHE_TTL_MS.buildings);
       return data;
-    } catch (error) {
-      console.warn('Building fetch failed, using cache fallback', error);
+    } catch {
       return cached.value ?? [];
     }
   }
@@ -221,8 +216,7 @@ class DataService {
           await buildingsApi.create({ ...building, lastModified: new Date().toISOString() });
         }
         return true;
-      } catch (error) {
-        console.warn('saveBuilding online request failed, queued for retry', error);
+      } catch {
       }
     }
 
@@ -249,8 +243,7 @@ class DataService {
       const data = apiListField(response);
       await this.setCache(cacheKey, data, CACHE_TTL_MS.technicians);
       return data;
-    } catch (error) {
-      console.warn('Technicians fetch failed, using cache fallback', error);
+    } catch {
       return cached.value ?? [];
     }
   }
@@ -269,8 +262,7 @@ class DataService {
       const data = apiListField(response);
       await this.setCache(cacheKey, data, CACHE_TTL_MS.assignments);
       return data;
-    } catch (error) {
-      console.warn('Assignments fetch failed, using cache fallback', error);
+    } catch {
       return cached.value ?? [];
     }
   }
@@ -281,8 +273,7 @@ class DataService {
       try {
         await assignmentsApi.create(assignment);
         return true;
-      } catch (error) {
-        console.warn('createAssignment online request failed, queued for retry', error);
+      } catch {
       }
     }
 

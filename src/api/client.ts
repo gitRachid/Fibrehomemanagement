@@ -4,9 +4,11 @@ type Primitive = string | number | boolean | null | undefined;
 type QueryParams = Record<string, Primitive>;
 
 const ENV_API_BASE_URL = process.env.EXPO_PUBLIC_API_URL?.trim();
+const PUBLIC_API_BASE_URL = 'http://94.177.204.65/api';
 
 const getDefaultApiUrl = (): string => {
   if (ENV_API_BASE_URL) return ENV_API_BASE_URL;
+  if (!__DEV__) return PUBLIC_API_BASE_URL;
   if (Platform.OS === 'android') return 'http://10.0.2.2:8084/api';
   return 'http://localhost:8084/api';
 };
@@ -61,19 +63,27 @@ const getErrorMessage = (payload: unknown, status: number): string => {
 
 const request = async <T>(endpoint: string, init: RequestInit = {}, params?: QueryParams): Promise<T> => {
   const token = getToken ? await getToken() : null;
-  const response = await fetch(buildUrl(endpoint, params), {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(init.headers || {}),
-    },
-  });
+  const url = buildUrl(endpoint, params);
+  const method = init.method || 'GET';
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...init,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(init.headers || {}),
+      },
+    });
+  } catch (error: any) {
+    throw new ApiError(`Network failed (${method} ${url}): ${error?.message || 'Network request failed'}`, 0, 'NETWORK_ERROR');
+  }
 
   const payload = (await response.json().catch(() => ({}))) as T;
   if (!response.ok) {
     const err = payload as { message?: string; code?: string };
-    throw new ApiError(getErrorMessage(payload, response.status), response.status, err?.code);
+    throw new ApiError(`${getErrorMessage(payload, response.status)} (${method} ${url})`, response.status, err?.code);
   }
 
   return payload;
@@ -93,18 +103,25 @@ export function apiDataField<T>(body: { data?: T } | null | undefined): T | unde
 /** Multipart POST with Bearer auth; do not set Content-Type (boundary required). */
 export const postFormData = async <T>(endpoint: string, formData: FormData): Promise<T> => {
   const token = getToken ? await getToken() : null;
-  const response = await fetch(buildUrl(endpoint), {
-    method: 'POST',
-    body: formData,
-    headers: {
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-  });
+  const url = buildUrl(endpoint);
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      body: formData,
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+  } catch (error: any) {
+    throw new ApiError(`Network failed (POST ${url}): ${error?.message || 'Network request failed'}`, 0, 'NETWORK_ERROR');
+  }
 
   const payload = (await response.json().catch(() => ({}))) as T;
   if (!response.ok) {
     const err = payload as { message?: string; code?: string };
-    throw new ApiError(getErrorMessage(payload, response.status), response.status, err?.code);
+    throw new ApiError(`${getErrorMessage(payload, response.status)} (POST ${url})`, response.status, err?.code);
   }
 
   return payload;

@@ -29,25 +29,8 @@ router.post('/login', async (req, res) => {
 
     const normalizedEmail = String(email).toLowerCase().trim();
 
-    // Check 1: Default admin
-    if (normalizedEmail === DEFAULT_ADMIN_EMAIL.toLowerCase()) {
-      const isValidPassword = await bcrypt.compare(String(password), DEFAULT_PASSWORD_HASH);
-      if (isValidPassword) {
-        const token = jwt.sign(
-          { sub: 'admin', email: normalizedEmail, role: 'manager' },
-          JWT_SECRET,
-          { expiresIn: JWT_EXPIRES_IN }
-        );
-        return res.json({
-          success: true,
-          data: {
-            token,
-            user: { id: 'admin', email: normalizedEmail, role: 'manager' },
-          },
-        });
-      }
-    }
-    // Check 2: Technicians in MongoDB
+    // Check MongoDB users first. This lets a real technician account use the same
+    // email as ADMIN_EMAIL without being forced into the default manager role.
     const technician = await Technician.findOne({
       email: normalizedEmail,
       status: 'active'
@@ -81,6 +64,25 @@ router.post('/login', async (req, res) => {
               email: technician.email,
               role: technician.role,
             },
+          },
+        });
+      }
+    }
+
+    // Fallback: default admin from environment.
+    if (normalizedEmail === DEFAULT_ADMIN_EMAIL.toLowerCase()) {
+      const isValidPassword = await bcrypt.compare(String(password), DEFAULT_PASSWORD_HASH);
+      if (isValidPassword) {
+        const token = jwt.sign(
+          { sub: 'admin', email: normalizedEmail, role: 'manager' },
+          JWT_SECRET,
+          { expiresIn: JWT_EXPIRES_IN }
+        );
+        return res.json({
+          success: true,
+          data: {
+            token,
+            user: { id: 'admin', email: normalizedEmail, role: 'manager' },
           },
         });
       }

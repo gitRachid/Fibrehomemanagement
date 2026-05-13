@@ -1,5 +1,5 @@
 import { ReactNode } from 'react';
-import { ActivityIndicator, ScrollView, Text, View } from 'react-native';
+import { ActivityIndicator, ScrollView, Text, TextStyle, View } from 'react-native';
 
 type Props = {
   title: string;
@@ -7,10 +7,12 @@ type Props = {
   right?: ReactNode;
   sticky?: ReactNode;
   loading?: boolean;
+  titleStyle?: TextStyle;
+  subtitleStyle?: TextStyle;
   children: ReactNode;
 };
 
-export function Screen({ title, subtitle, right, sticky, loading, children }: Props) {
+export function Screen({ title, subtitle, right, sticky, loading, titleStyle, subtitleStyle, children }: Props) {
   return (
     <ScrollView
       style={{ flex: 1, backgroundColor: '#f5f7fb' }}
@@ -30,8 +32,8 @@ export function Screen({ title, subtitle, right, sticky, loading, children }: Pr
       >
         <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
           <View style={{ flex: 1, gap: 4 }}>
-            <Text style={{ fontSize: 22, fontWeight: '700', color: '#0f172a' }}>{title}</Text>
-            {subtitle ? <Text style={{ fontSize: 14, color: '#475569' }}>{subtitle}</Text> : null}
+            <Text style={[{ fontSize: 22, fontWeight: '700', color: '#0f172a' }, titleStyle]}>{title}</Text>
+            {subtitle ? <Text style={[{ fontSize: 14, color: '#475569' }, subtitleStyle]}>{subtitle}</Text> : null}
           </View>
           {right}
         </View>

@@ -1,4 +1,4 @@
-export { apiClient } from './client';
+export { API_BASE_URL, apiClient } from './client';
 export { buildingsApi, type Building, type Photo } from './buildings';
 export { techniciansApi, type Technician } from './technicians';
 export { assignmentsApi, type Assignment } from './assignments';
@@ -10,3 +10,4 @@ export { buildingStatusesApi, type BuildingStatus } from './buildingStatuses';
 export { routeOptiqueApi, type RouteOptiqueImportResult, type RouteOptiqueRow } from './routeOptique';
 export { technicalDossiersApi } from './technicalDossiers';
 export { kmzApi, type KmzCoordinate, type KmzFeature, type KmzImportFile, type KmzImportResult } from './kmz';
+export { zoneDocumentsApi, type ZoneDocument, type ZoneDocumentImportResult } from './zoneDocuments';

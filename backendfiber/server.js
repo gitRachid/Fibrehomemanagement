@@ -54,6 +54,7 @@ if (apiRequireAuth) {
   app.use('/api/route-optique', requireAuth, require('./routes/routeOptique'));
   app.use('/api/technical-dossiers', requireAuth, require('./routes/technicalDossiers'));
   app.use('/api/kmz', requireAuth, require('./routes/kmz'));
+  app.use('/api/zone-documents', requireAuth, require('./routes/zoneDocuments'));
 } else {
   app.use('/api/buildings', require('./routes/buildings'));
   app.use('/api/technicians', require('./routes/technicians'));
@@ -65,6 +66,7 @@ if (apiRequireAuth) {
   app.use('/api/route-optique', require('./routes/routeOptique'));
   app.use('/api/technical-dossiers', require('./routes/technicalDossiers'));
   app.use('/api/kmz', require('./routes/kmz'));
+  app.use('/api/zone-documents', require('./routes/zoneDocuments'));
 }
 
 // Health check endpoint
@@ -98,9 +100,5 @@ app.use((req, res) => {
 const PORT = process.env.PORT || 8084;
 
 connectDatabase().then(() => {
-  app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-    console.log(`API auth required: ${apiRequireAuth ? 'yes' : 'no'}`);
-    console.log(`API available at ${process.env.PUBLIC_API_BASE_URL || `http://localhost:${PORT}`}/api`);
-  });
+  app.listen(PORT);
 });
