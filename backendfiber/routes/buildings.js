@@ -2,6 +2,50 @@ const express = require('express');
 const router = express.Router();
 const { body, validationResult } = require('express-validator');
 const Building = require('../models/Building');
+const Assignment = require('../models/Assignment');
+const Technician = require('../models/Technician');
+
+const getAssignedBuildingIdsForUser = async (user) => {
+  if (!user || user.role !== 'technician') return null;
+
+  const technician = await Technician.findOne({
+    $or: [
+      { id: user.sub },
+      { id: user.id },
+      { email: user.email },
+    ].filter((condition) => Object.values(condition)[0]),
+  }).select('_id assignedBuildings');
+
+  if (!technician) return [];
+
+  const assignedFromAssignments = await Assignment.find({
+    technicianIds: technician._id,
+    status: 'active',
+  }).distinct('itemId');
+
+  return Array.from(
+    new Set([
+      ...(technician.assignedBuildings || []).map((id) => id.toString()),
+      ...assignedFromAssignments.map((id) => id.toString()),
+    ]),
+  );
+};
+
+const applyTechnicianAccessFilter = async (req, query) => {
+  const assignedBuildingIds = await getAssignedBuildingIdsForUser(req.user);
+  if (!assignedBuildingIds) return query;
+  return {
+    ...query,
+    _id: { $in: assignedBuildingIds },
+  };
+};
+
+const canUserAccessBuilding = async (req, building) => {
+  if (!req.user || req.user.role !== 'technician') return true;
+  if (!building?._id) return false;
+  const assignedBuildingIds = await getAssignedBuildingIdsForUser(req.user);
+  return assignedBuildingIds?.includes(building._id.toString()) || false;
+};
 
 // Get all buildings with optional filters
 router.get('/', async (req, res) => {
@@ -32,6 +76,7 @@ router.get('/', async (req, res) => {
         { syndic: new RegExp(search, 'i') }
       ];
     }
+    query = await applyTechnicianAccessFilter(req, query);
 
     const buildings = await Building.find(query)
       .sort({ lastModified: -1 })
@@ -57,10 +102,11 @@ router.get('/', async (req, res) => {
 router.get('/service/:serviceId', async (req, res) => {
   try {
     const { status = 'active' } = req.query;
-    const buildings = await Building.find({ 
+    const query = await applyTechnicianAccessFilter(req, {
       serviceId: req.params.serviceId,
       status
-    }).populate('photos');
+    });
+    const buildings = await Building.find(query).populate('photos');
 
     res.json({ success: true, count: buildings.length, data: buildings });
   } catch (error) {
@@ -79,6 +125,9 @@ router.get('/:id', async (req, res) => {
     }).populate('photos');
 
     if (!building) {
+      return res.status(404).json({ success: false, message: 'Building not found' });
+    }
+    if (!(await canUserAccessBuilding(req, building))) {
       return res.status(404).json({ success: false, message: 'Building not found' });
     }
 
