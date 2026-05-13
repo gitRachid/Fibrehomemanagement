@@ -317,6 +317,11 @@ class DataService {
     return this.lastSyncAt;
   }
 
+  async clearSessionData(): Promise<void> {
+    await this.queueManager.clear();
+    this.lastSyncAt = null;
+  }
+
   async saveToStorage(key: string, data: unknown): Promise<void> {
     await Storage.setItem(key, JSON.stringify(data));
   }

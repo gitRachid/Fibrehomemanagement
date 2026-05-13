@@ -1,7 +1,9 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { jwtDecode } from 'jwt-decode';
+import { useQueryClient } from '@tanstack/react-query';
 import { registerTokenGetter } from '@/api/client';
-import { secureStorage } from '@/lib/storage';
+import { secureStorage, storage } from '@/lib/storage';
+import { dataService } from '@/services/dataService';
 
 type UserRole = 'technician' | 'supervisor' | 'manager';
 
@@ -48,6 +50,7 @@ const decodeUser = (rawToken: string): AuthUser | null => {
 };
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const queryClient = useQueryClient();
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [token, setToken] = useState<string | null>(null);
@@ -109,7 +112,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const logout = async () => {
     try {
+      await dataService.clearSessionData();
+      await storage.clear();
       await removeToken();
+      queryClient.clear();
       setToken(null);
       setUser(null);
       setIsAuthenticated(false);

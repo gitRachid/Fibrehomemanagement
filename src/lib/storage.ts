@@ -27,6 +27,15 @@ export const storage = {
     }
     await AsyncStorage.removeItem(key);
   },
+  async clear(): Promise<void> {
+    if (Platform.OS === 'web') {
+      if (typeof window !== 'undefined') {
+        window.localStorage.clear();
+      }
+      return;
+    }
+    await AsyncStorage.clear();
+  },
 };
 
 export const secureStorage = {

@@ -148,6 +148,12 @@ router.post('/bulk', async (req, res) => {
       return res.status(400).json({ success: false, message: 'No valid assignments found' });
     }
 
+    const buildingIds = normalizedAssignments.map((assignment) => assignment.itemId);
+    await Assignment.updateMany(
+      { itemId: { $in: buildingIds }, status: 'active' },
+      { status: 'cancelled' },
+    );
+
     const created = await Assignment.insertMany(normalizedAssignments);
     
     res.status(201).json({

@@ -7,7 +7,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as XLSX from 'xlsx';
 import { useQueryClient } from '@tanstack/react-query';
 import { GestureHandlerRootView, PanGestureHandler, State } from 'react-native-gesture-handler';
-import { useBuildings, useTechnicians, useCreateAssignment, useBulkCreateAssignments } from '@/hooks';
+import { useBuildings, useTechnicians } from '@/hooks';
 import { dataService } from '@/services/dataService';
 import { Building as ApiBuilding, Technician as ApiTechnician, buildingsApi, technicalDossiersApi } from '@/api';
 import { saveFileWithPicker } from '@/utils/saveFileWithPicker';
@@ -59,6 +59,7 @@ export default function InfoImmeubleScreen() {
     role: user?.role || 'technician',
     email: user?.email || '',
   }), [user]);
+  const isManager = currentUser.role === 'manager';
   const { data: apiTechnicians, isLoading: isLoadingTechs } = useTechnicians({ status: 'active' });
   const technicians: ApiTechnician[] = apiTechnicians || [];
   const [showActionSheet, setShowActionSheet] = useState(false);
@@ -120,8 +121,8 @@ export default function InfoImmeubleScreen() {
 
   const selectedZone = typeof zone === 'string' ? zone.trim() : '';
   useEffect(() => {
-    if (importExcel === '1') setShowImportModal(true);
-  }, [importExcel]);
+    if (importExcel === '1' && isManager) setShowImportModal(true);
+  }, [importExcel, isManager]);
   const backendStatusFilter = statusFilter === 'all' ? 'active' : statusFilter;
   const { data: apiBuildings, isLoading, refetch } = useBuildings(selectedZone ? undefined : itemId, { status: backendStatusFilter });
   const mergedBuildings = Array.from(
@@ -222,6 +223,10 @@ export default function InfoImmeubleScreen() {
   const normalizeHeader = (value: string): string => value.trim().replace(/\s+/g, ' ').toLowerCase();
 
   const handlePickExcelFile = async () => {
+    if (!isManager) {
+      Alert.alert('Accès refusé', 'Seuls les gestionnaires peuvent importer des immeubles.');
+      return;
+    }
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: [
@@ -241,6 +246,10 @@ export default function InfoImmeubleScreen() {
   };
 
   const handleImportBuildings = async () => {
+    if (!isManager) {
+      Alert.alert('Accès refusé', 'Seuls les gestionnaires peuvent importer des immeubles.');
+      return;
+    }
     if (!importFilePath) {
       Alert.alert('Erreur', 'Veuillez sélectionner un fichier Excel');
       return;
@@ -613,10 +622,20 @@ export default function InfoImmeubleScreen() {
     );
   };
 
-  const confirmAssignment = () => {
+  const persistAssignment = async (assignment: ItemAssignment) => {
+    setSyncStatus('syncing');
+    await dataService.createAssignment({
+      ...assignment,
+      status: 'active',
+    });
+    setSyncStatus(dataService.getNetworkStatus() ? 'synced' : 'pending');
+  };
+
+  const confirmAssignment = async () => {
     if (selectedBuildingsForArchive.length > 0 && selectedTechnicians.length === 1) {
-      const selectedTechnician = technicians.find(t => t.id === selectedTechnicians[0]);
-      
+      const nextAssignments = [...buildingAssignments];
+      const assignmentsToPersist: ItemAssignment[] = [];
+
       selectedBuildingsForArchive.forEach(buildingId => {
         const newAssignment: ItemAssignment = {
           itemId: buildingId,
@@ -624,12 +643,24 @@ export default function InfoImmeubleScreen() {
           assignedBy: currentUser.id,
           assignedAt: new Date()
         };
-        
-        setBuildingAssignments(prev => {
-          const filtered = prev.filter(a => a.itemId !== buildingId);
-          return [...filtered, newAssignment];
-        });
+        const previousIndex = nextAssignments.findIndex(a => a.itemId === buildingId);
+        if (previousIndex >= 0) {
+          nextAssignments[previousIndex] = newAssignment;
+        } else {
+          nextAssignments.push(newAssignment);
+        }
+        assignmentsToPersist.push(newAssignment);
       });
+
+      setBuildingAssignments(nextAssignments);
+      await saveAssignmentsToLocal(nextAssignments);
+
+      try {
+        await Promise.all(assignmentsToPersist.map(persistAssignment));
+      } catch {
+        setSyncStatus('pending');
+        Alert.alert('Affectation', 'Affectation sauvegardée localement. Elle sera synchronisée dès que possible.');
+      }
       
       setAssignmentMode(false);
       setSelectedTechnicians([]);
@@ -762,7 +793,7 @@ export default function InfoImmeubleScreen() {
     return technicians.filter(tech => assignment.technicianIds.includes(tech.id));
   };
 
-  const handleBuildingPress = (building: Building) => {
+  const handleBuildingPress = async (building: Building) => {
     if (isArchiveMode) {
       toggleArchiveSelection(building.id);
     } else if (assignmentMode && selectedTechnicians.length === 1) {
@@ -774,13 +805,20 @@ export default function InfoImmeubleScreen() {
         assignedAt: new Date()
       };
 
-      setBuildingAssignments(prev => {
-        const filtered = prev.filter(a => a.itemId !== building.id);
-        const updated = [...filtered, newAssignment];
-        // Save to local storage immediately
-        saveAssignmentsToLocal(updated);
-        return updated;
-      });
+      const updatedAssignments = (() => {
+        const filtered = buildingAssignments.filter(a => a.itemId !== building.id);
+        return [...filtered, newAssignment];
+      })();
+
+      setBuildingAssignments(updatedAssignments);
+      await saveAssignmentsToLocal(updatedAssignments);
+
+      try {
+        await persistAssignment(newAssignment);
+      } catch {
+        setSyncStatus('pending');
+        Alert.alert('Affectation', 'Affectation sauvegardée localement. Elle sera synchronisée dès que possible.');
+      }
 
       // Silent assignment - no success alert
     } else if (canAccessBuilding(building)) {
@@ -1052,7 +1090,7 @@ export default function InfoImmeubleScreen() {
       <Modal
         animationType="slide"
         transparent={true}
-        visible={showImportModal}
+        visible={showImportModal && isManager}
         onRequestClose={() => setShowImportModal(false)}
       >
         <View style={styles.modalOverlay}>

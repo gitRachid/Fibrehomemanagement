@@ -102,6 +102,7 @@ export default function SelectionScreen() {
   const [newZoneName, setNewZoneName] = useState('');
   const floatingButtonPosition = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
   const floatingButtonOffset = useRef({ x: 0, y: 0 });
+  const canManageZonesRef = useRef(false);
 
   const floatingButtonPanResponder = useRef(
     PanResponder.create({
@@ -131,7 +132,7 @@ export default function SelectionScreen() {
           tension: 90,
         }).start();
 
-        if (Math.abs(gesture.dx) < 6 && Math.abs(gesture.dy) < 6) {
+        if (canManageZonesRef.current && Math.abs(gesture.dx) < 6 && Math.abs(gesture.dy) < 6) {
           setShowAddZone(true);
         }
       },
@@ -146,6 +147,9 @@ export default function SelectionScreen() {
       return {};
     }
   }, [token]);
+
+  const canManageZones = currentUser.role === 'manager';
+  canManageZonesRef.current = canManageZones;
 
   const technicians = useMemo(() => {
     const byKey = new Map<string, ApiTechnician>();
@@ -230,6 +234,10 @@ export default function SelectionScreen() {
   };
 
   const importZone = (z: ZoneRow) => {
+    if (!canManageZones) {
+      Alert.alert('Accès refusé', 'Seuls les gestionnaires peuvent importer des données.');
+      return;
+    }
     const zoneParam = z.zone === '__none__' ? '' : z.zone;
     setSelectedMenuZone(null);
     router.push({
@@ -239,6 +247,10 @@ export default function SelectionScreen() {
   };
 
   const openZoneAssignment = (z: ZoneRow) => {
+    if (!canManageZones) {
+      Alert.alert('Accès refusé', 'Seuls les gestionnaires peuvent modifier les affectations de zone.');
+      return;
+    }
     setSelectedMenuZone(null);
     setSelectedAssignmentZone(z);
     const existing = zoneAssignments.find((assignment) => assignment.zone === z.zone);
@@ -250,6 +262,10 @@ export default function SelectionScreen() {
   };
 
   const assignZoneToTechnician = async () => {
+    if (!canManageZones) {
+      Alert.alert('Accès refusé', 'Seuls les gestionnaires peuvent modifier les affectations de zone.');
+      return;
+    }
     if (!selectedAssignmentZone) return;
     if (selectedUserIds.length === 0) {
       Alert.alert('Affectation', 'Veuillez sélectionner au moins un utilisateur.');
@@ -290,6 +306,10 @@ export default function SelectionScreen() {
   };
 
   const importKmzToDatabase = async (z: ZoneRow) => {
+    if (!canManageZones) {
+      Alert.alert('Accès refusé', 'Seuls les gestionnaires peuvent importer des données.');
+      return;
+    }
     Alert.alert('Import KMZ en base', `Choisissez le fichier KMZ pour la zone "${z.label}".`);
 
     setIsImportingKmz(true);
@@ -327,6 +347,10 @@ export default function SelectionScreen() {
   };
 
   const pickZoneFile = async (z: ZoneRow, kind: ZoneImportKind) => {
+    if (!canManageZones) {
+      Alert.alert('Accès refusé', 'Seuls les gestionnaires peuvent importer des données.');
+      return;
+    }
 
     const config = {
       kmz: {
@@ -451,6 +475,10 @@ export default function SelectionScreen() {
   };
 
   const archiveZone = async (z: ZoneRow) => {
+    if (!canManageZones) {
+      Alert.alert('Accès refusé', 'Seuls les gestionnaires peuvent archiver une zone.');
+      return;
+    }
     Alert.alert('Archiver la zone', `Archiver la zone "${z.label}" ?`, [
       { text: 'Annuler', style: 'cancel' },
       {
@@ -482,6 +510,11 @@ export default function SelectionScreen() {
   };
 
   const addZone = async () => {
+    if (!canManageZones) {
+      Alert.alert('Accès refusé', 'Seuls les gestionnaires peuvent ajouter une zone.');
+      setShowAddZone(false);
+      return;
+    }
     const name = newZoneName.trim();
     if (!name) {
       Alert.alert('Zone', 'Veuillez saisir le nom de la zone.');
@@ -568,7 +601,7 @@ export default function SelectionScreen() {
             <Pressable
               key={z.zone}
               onPress={() => openZone(z)}
-              onLongPress={() => setSelectedMenuZone(z)}
+              onLongPress={canManageZones ? () => setSelectedMenuZone(z) : undefined}
               delayLongPress={350}
               style={{
                 borderRadius: 14,
@@ -586,6 +619,7 @@ export default function SelectionScreen() {
                     {z.count} immeuble{z.count > 1 ? 's' : ''}
                   </Text>
                 </View>
+                {canManageZones ? (
                 <Pressable
                   onPress={(event) => {
                     event.stopPropagation();
@@ -595,6 +629,7 @@ export default function SelectionScreen() {
                 >
                   <Text style={{ fontSize: 22, fontWeight: '700', color: '#334155' }}>⋮</Text>
                 </Pressable>
+                ) : null}
               </View>
 
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
@@ -627,7 +662,7 @@ export default function SelectionScreen() {
         <Text style={{ fontWeight: '600', color: '#334155' }}>Liste globale des immeubles</Text>
       </Pressable>
 
-      <Modal visible={showAddZone} transparent animationType="fade" onRequestClose={() => setShowAddZone(false)}>
+      <Modal visible={showAddZone && canManageZones} transparent animationType="fade" onRequestClose={() => setShowAddZone(false)}>
         <View style={{ flex: 1, justifyContent: 'center', backgroundColor: 'rgba(15, 23, 42, 0.45)', padding: 20 }}>
           <View style={{ borderRadius: 16, backgroundColor: '#fff', padding: 18, gap: 14 }}>
             <Text style={{ fontSize: 18, fontWeight: '700', color: '#0f172a' }}>Ajouter une zone</Text>
@@ -683,7 +718,15 @@ export default function SelectionScreen() {
                 Trier par nom ({sortDirection === 'asc' ? 'A → Z' : 'Z → A'})
               </Text>
             </Pressable>
-            {selectedMenuZone ? (
+            <Pressable
+              onPress={() => setSortDirection((current) => current === 'asc' ? 'desc' : 'asc')}
+              style={{ borderRadius: 10, backgroundColor: '#f1f5f9', padding: 13 }}
+            >
+              <Text style={{ color: '#0f172a', fontWeight: '700' }}>
+                Trier par nom ({sortDirection === 'asc' ? 'A → Z' : 'Z → A'})
+              </Text>
+            </Pressable>
+            {canManageZones && selectedMenuZone ? (
               <Pressable
                 onPress={() => importZone(selectedMenuZone)}
                 style={{ borderRadius: 10, backgroundColor: '#2563eb', padding: 13 }}
@@ -691,7 +734,7 @@ export default function SelectionScreen() {
                 <Text style={{ color: '#fff', fontWeight: '700' }}>Importer Excel immeubles</Text>
               </Pressable>
             ) : null}
-            {selectedMenuZone ? (
+            {canManageZones && selectedMenuZone ? (
               <Pressable
                 onPress={() => openZoneAssignment(selectedMenuZone)}
                 style={{ borderRadius: 10, backgroundColor: '#0284c7', padding: 13 }}
@@ -699,7 +742,7 @@ export default function SelectionScreen() {
                 <Text style={{ color: '#fff', fontWeight: '700' }}>Affectation technicien/superviseur</Text>
               </Pressable>
             ) : null}
-            {selectedMenuZone ? (
+            {canManageZones && selectedMenuZone ? (
               <Pressable
                 onPress={() => {
                   void importKmzToDatabase(selectedMenuZone);
@@ -712,7 +755,7 @@ export default function SelectionScreen() {
                 </Text>
               </Pressable>
             ) : null}
-            {selectedMenuZone ? (
+            {canManageZones && selectedMenuZone ? (
               <Pressable
                 onPress={() => pickZoneFile(selectedMenuZone, 'routeOptiqueExcel')}
                 disabled={isImportingRouteOptique}
@@ -723,7 +766,7 @@ export default function SelectionScreen() {
                 </Text>
               </Pressable>
             ) : null}
-            {selectedMenuZone ? (
+            {canManageZones && selectedMenuZone ? (
               <Pressable
                 onPress={() => pickZoneFile(selectedMenuZone, 'planTirageFusionPdf')}
                 disabled={isImportingPlanPdf}
@@ -734,7 +777,7 @@ export default function SelectionScreen() {
                 </Text>
               </Pressable>
             ) : null}
-            {selectedMenuZone ? (
+            {canManageZones && selectedMenuZone ? (
               <Pressable
                 onPress={() => archiveZone(selectedMenuZone)}
                 disabled={isArchiving}
@@ -878,6 +921,7 @@ export default function SelectionScreen() {
         </View>
       </Modal>
       </Screen>
+      {canManageZones ? (
       <Animated.View
         {...floatingButtonPanResponder.panHandlers}
         style={[
@@ -905,6 +949,7 @@ export default function SelectionScreen() {
       >
         <Text style={{ color: '#f8fafc', fontSize: 36, lineHeight: 40, fontWeight: '700', marginTop: -2 }}>+</Text>
       </Animated.View>
+      ) : null}
     </View>
   );
 }
