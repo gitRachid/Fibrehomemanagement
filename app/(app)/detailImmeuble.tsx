@@ -9,12 +9,20 @@ import * as IntentLauncher from 'expo-intent-launcher';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { GestureHandlerRootView, PanGestureHandler, State } from 'react-native-gesture-handler';
 import NetInfo from '@react-native-community/netinfo';
-import { useBuilding, useBuildingStatuses, useCreateBuildingStatus, useDeleteBuildingStatus, useUpdateBuilding } from '@/hooks';
+import {
+  useBuilding,
+  useBuildingStatuses,
+  useCreateBuildingStatus,
+  useDeleteBuildingStatus,
+  usePatchSyndicInstallationAuth,
+  useUpdateBuilding,
+} from '@/hooks';
 import { dataService } from '@/services/dataService';
 import { buildingsApi, photosApi, technicalDossiersApi, zoneDocumentsApi, type Building } from '@/api';
 import type { BuildingStatus } from '@/api';
 import { saveFileWithPicker } from '@/utils/saveFileWithPicker';
 import { useAuth } from '@/ctx';
+import SignatureCanvas, { type SignatureViewRef } from 'react-native-signature-canvas';
 
 // Local Photo interface
 interface Photo {
@@ -80,6 +88,7 @@ const buildingFields: (keyof Building)[] = [
   'idImmeuble',
   'idImmeubleSysteme', 
   'ville',
+  'zone',
   'codePostal',
   'longitude',
   'latitude',
@@ -94,6 +103,7 @@ const buildingFields: (keyof Building)[] = [
   'nbrB2C',
   'totalClients',
   'cheminFibrePBO1',
+  'bpo1',
   'floorPBO1',
   'typePBO1',
   'PBO2',
@@ -120,6 +130,7 @@ const fieldLabels: Record<keyof Omit<Building, 'photos'>, string> = {
   numeroNomImmeuble: 'N°/Nom Immeuble',
   utilisationImmeuble: 'Utilisation Immeuble',
   nbreEtages: 'Nbre Etages',
+  nbreAppartementsParEtage: 'Nb app. par étage (JSON)',
   sousSol: 'Sous Sol',
   sousSolCommun: 'Sous Sol Commun',
   solutionRaccordement: 'Solution de Raccordement',
@@ -127,6 +138,7 @@ const fieldLabels: Record<keyof Omit<Building, 'photos'>, string> = {
   nbrB2C: 'Nbr B2C',
   totalClients: 'Total Clients',
   cheminFibrePBO1: 'Chemin de Fibre PBO1',
+  bpo1: 'BPO1',
   floorPBO1: 'Floor PBO1',
   typePBO1: 'Type PBO1',
   PBO2: 'PBO2',
@@ -134,6 +146,8 @@ const fieldLabels: Record<keyof Omit<Building, 'photos'>, string> = {
   typePBO2: 'Type PBO2',
   syndic: 'SYNDIC',
   numSyndic: 'Num Syndic',
+  syndicInstallationAuthSignature: 'Signature autorisation syndic',
+  syndicInstallationAuthSignedAt: 'Date signature syndic',
   remarques: 'Remarques',
   typologieHabitat: 'Typologie Habitat',
   verticalite: 'Verticalité',
@@ -166,6 +180,54 @@ const sanitizeFileName = (value: string) => (
     .replace(/^_+|_+$/g, '')
     || 'plan-tirage-fusion.pdf'
 );
+
+const MAX_ETAGES_APPARTEMENTS = 40;
+
+function parseAppartementsParEtageJson(raw: unknown): Record<string, string> {
+  if (typeof raw !== 'string' || !raw.trim()) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (/^\d+$/.test(k) && v != null) out[k] = String(v);
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** Interprétation : « Nbre Étages » = nombre d'étages au-dessus du RDC (0 = immeuble sur RDC uniquement). */
+function countUpperFloorsFromNbreEtages(value: unknown): number {
+  const s = String(value ?? '').trim();
+  const match = s.match(/^(\d+)/);
+  const n = match ? parseInt(match[1], 10) : NaN;
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.min(MAX_ETAGES_APPARTEMENTS, n);
+}
+
+function floorLevelTitle(floorIndex: number): string {
+  if (floorIndex === 0) return 'Rez-de-chaussée';
+  if (floorIndex === 1) return '1er étage';
+  return `${floorIndex}e étage`;
+}
+
+function floorLevelBadge(floorIndex: number): string {
+  if (floorIndex === 0) return 'RDC';
+  return String(floorIndex);
+}
+
+/** Résumé une ligne du type RDC:2/1:4/2:4 (étages selon floorCount). */
+function formatAppartementsSummaryLine(map: Record<string, string>, floorCount: number): string {
+  const parts: string[] = [];
+  for (let i = 0; i < floorCount; i++) {
+    const v = String(map[String(i)] ?? '').trim();
+    const label = i === 0 ? 'RDC' : String(i);
+    parts.push(`${label}:${v || '—'}`);
+  }
+  return parts.join('/');
+}
 
 type ZoneImportFile = {
   documentId?: string;
@@ -269,6 +331,7 @@ export default function DetailImmeubleScreen() {
   // Use API building data
   const { data: apiBuilding, isLoading: isLoadingBuilding } = useBuilding(buildingId || '');
   const updateBuildingMutation = useUpdateBuilding();
+  const patchSyndicInstallationAuthMutation = usePatchSyndicInstallationAuth();
   
   const [buildingsData, setBuildingsData] = useState<Partial<Building>[]>([]);
   const [showPhotoModal, setShowPhotoModal] = useState(false);
@@ -300,6 +363,10 @@ export default function DetailImmeubleScreen() {
   const [newStatusManagerOnly, setNewStatusManagerOnly] = useState(false);
   const [localStatusOptions, setLocalStatusOptions] = useState<BuildingStatus[]>([]);
   const [planPdfOptions, setPlanPdfOptions] = useState<PlanPdfOption[]>([]);
+  const [aptPerFloorEditorOpen, setAptPerFloorEditorOpen] = useState(false);
+  const [showSyndicSignatureModal, setShowSyndicSignatureModal] = useState(false);
+  const [syndicSigSaving, setSyndicSigSaving] = useState(false);
+  const syndicSignatureRef = useRef<SignatureViewRef | null>(null);
   const [appointment, setAppointment] = useState<BuildingAppointment | null>(null);
   const [appointmentDate, setAppointmentDate] = useState('');
   const [appointmentTime, setAppointmentTime] = useState('');
@@ -807,6 +874,10 @@ export default function DetailImmeubleScreen() {
   };
 
   const archiveCurrentBuilding = () => {
+    if (currentUserRole !== 'manager') {
+      Alert.alert('Accès refusé', 'Seul le manager peut archiver un immeuble.');
+      return;
+    }
     const building = buildingsData[0];
     const id = building?._id || building?.idImmeuble;
     if (!id) {
@@ -841,6 +912,15 @@ export default function DetailImmeubleScreen() {
     setShowBuildingMenu(false);
     if (!id) {
       Alert.alert('Erreur', 'Aucun immeuble sélectionné pour exporter le dossier technique.');
+      return;
+    }
+
+    const photoList = (building?.photos || []) as unknown[];
+    if (photoList.length === 0) {
+      Alert.alert(
+        'Photos requises',
+        'Ajoutez au moins une photo à la fiche avant d’exporter le dossier technique.',
+      );
       return;
     }
 
@@ -1616,6 +1696,7 @@ export default function DetailImmeubleScreen() {
     numeroNomImmeuble: '',
     utilisationImmeuble: '',
     nbreEtages: '',
+    nbreAppartementsParEtage: '',
     sousSol: '',
     sousSolCommun: '',
     solutionRaccordement: '',
@@ -1623,6 +1704,7 @@ export default function DetailImmeubleScreen() {
     nbrB2C: '',
     totalClients: '',
     cheminFibrePBO1: '',
+    bpo1: '',
     floorPBO1: '',
     typePBO1: '',
     PBO2: '',
@@ -1630,6 +1712,8 @@ export default function DetailImmeubleScreen() {
     typePBO2: '',
     syndic: '',
     numSyndic: '',
+    syndicInstallationAuthSignature: '',
+    syndicInstallationAuthSignedAt: '',
     remarques: '',
     typologieHabitat: '',
     verticalite: '',
@@ -1637,8 +1721,307 @@ export default function DetailImmeubleScreen() {
     serviceId: '',
     photos: []
   } as Building;
+  const syndicSigData = String(firstBuilding.syndicInstallationAuthSignature ?? '').trim();
+  const syndicSigRestoreUrl = syndicSigData.startsWith('data:image') ? syndicSigData : undefined;
+
   const updateField = (field: keyof Building, value: string) => {
     updateBuildingField(0, field, value);
+  };
+
+  const handleSyndicSignatureConfirm = async (dataUrl: string) => {
+    const signedAt = new Date().toISOString();
+    const id = String(buildingsData[0]?._id || '').trim();
+    updateField('syndicInstallationAuthSignature', dataUrl);
+    updateField('syndicInstallationAuthSignedAt', signedAt);
+
+    if (!id) {
+      setShowSyndicSignatureModal(false);
+      Alert.alert(
+        'Signature enregistrée',
+        'Enregistrez la fiche une fois l’immeuble associé au serveur.',
+      );
+      return;
+    }
+
+    try {
+      setSyndicSigSaving(true);
+      await patchSyndicInstallationAuthMutation.mutateAsync({
+        id,
+        body: { syndicInstallationAuthSignature: dataUrl, syndicInstallationAuthSignedAt: signedAt },
+      });
+      setShowSyndicSignatureModal(false);
+      Alert.alert('Signature enregistrée', 'La signature a été enregistrée sur le serveur.');
+    } catch {
+      try {
+        const merged = {
+          ...(buildingsData[0] as Building),
+          syndicInstallationAuthSignature: dataUrl,
+          syndicInstallationAuthSignedAt: signedAt,
+        };
+        await dataService.saveBuilding(merged as any);
+      } catch {
+        /* ignore secondary persistence errors */
+      }
+      setShowSyndicSignatureModal(false);
+      Alert.alert(
+        'Sauvegardé localement',
+        'La signature sera envoyée au serveur lors de la prochaine synchronisation.',
+      );
+    } finally {
+      setSyndicSigSaving(false);
+    }
+  };
+
+  const renderAppartementsParNiveau = (buildingIndex: number) => {
+    const building = buildingsData[buildingIndex];
+    if (!building) return null;
+    const upper = countUpperFloorsFromNbreEtages(building.nbreEtages);
+    const floorCount = 1 + upper;
+    const rawJson =
+      typeof building.nbreAppartementsParEtage === 'string' ? building.nbreAppartementsParEtage : '';
+    const map = parseAppartementsParEtageJson(rawJson);
+
+    const setFloorValue = (floorIndex: number, text: string) => {
+      const digits = text.replace(/\D/g, '');
+      const next = { ...map, [String(floorIndex)]: digits };
+      updateBuildingField(buildingIndex, 'nbreAppartementsParEtage', JSON.stringify(next));
+    };
+
+    let sum = 0;
+    for (let i = 0; i < floorCount; i++) {
+      const v = parseInt(String(map[String(i)] ?? '').trim(), 10);
+      if (Number.isFinite(v)) sum += v;
+    }
+
+    const rawEtagesDisplay = String(building.nbreEtages ?? '').trim() || '0';
+    const summaryLine = formatAppartementsSummaryLine(map, floorCount);
+    const summarySegments = summaryLine.split('/').map((part) => {
+      const idx = part.indexOf(':');
+      if (idx === -1) return { label: part.trim(), value: '—' };
+      return { label: part.slice(0, idx).trim(), value: part.slice(idx + 1).trim() || '—' };
+    });
+
+    const chipBg = isDark ? '#1e293b' : '#ffffff';
+    const chipBorder = isDark ? '#334155' : '#e2e8f0';
+    const labelMuted = isDark ? '#94a3b8' : '#64748b';
+    const valueAccent = isDark ? '#7dd3fc' : '#2563eb';
+    const valueEmpty = isDark ? '#475569' : '#94a3b8';
+
+    const summaryChipsRow = (
+      <ScrollView
+        horizontal
+        nestedScrollEnabled
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.aptSummaryChipsContent}
+        style={styles.aptSummaryChipsScroll}
+      >
+        {summarySegments.map((seg, i) => {
+          const isEmpty = seg.value === '—' || seg.value === '';
+          return (
+            <React.Fragment key={`apt-seg-${buildingIndex}-${i}`}>
+              {i > 0 ? (
+                <View style={[styles.aptSummaryChipSep, { backgroundColor: isDark ? '#475569' : '#cbd5e1' }]} />
+              ) : null}
+              <View
+                style={[
+                  styles.aptSummaryChip,
+                  {
+                    backgroundColor: chipBg,
+                    borderColor: chipBorder,
+                    shadowColor: '#0f172a',
+                    shadowOffset: { width: 0, height: 1 },
+                    shadowOpacity: isDark ? 0.25 : 0.07,
+                    shadowRadius: 5,
+                    elevation: isDark ? 0 : 2,
+                  },
+                ]}
+              >
+                <Text style={[styles.aptSummaryChipLabel, { color: labelMuted }]} numberOfLines={1}>
+                  {seg.label}
+                </Text>
+                <Text
+                  style={[
+                    styles.aptSummaryChipValue,
+                    { color: isEmpty ? valueEmpty : valueAccent },
+                  ]}
+                  numberOfLines={1}
+                >
+                  {isEmpty ? '—' : seg.value}
+                </Text>
+              </View>
+            </React.Fragment>
+          );
+        })}
+      </ScrollView>
+    );
+
+    if (!aptPerFloorEditorOpen) {
+      const accent = isDark ? '#38bdf8' : '#2563eb';
+      const shellBg = isDark ? '#0f172a' : '#ffffff';
+      const shellBorder = isDark ? '#1e3a5f' : '#e0e7ff';
+      const surfaceBg = isDark ? '#020617' : '#f1f5f9';
+      const surfaceBorder = isDark ? '#1e293b' : '#e2e8f0';
+      const kickerColor = isDark ? '#94a3b8' : '#64748b';
+      const headlineColor = isDark ? '#f8fafc' : '#0f172a';
+      const chevronBg = isDark ? '#1e293b' : '#eff6ff';
+      const chevronBorder = isDark ? '#334155' : '#bfdbfe';
+
+      return (
+        <View
+          style={[
+            styles.aptSummaryShell,
+            {
+              backgroundColor: shellBg,
+              borderColor: shellBorder,
+              shadowColor: '#0f172a',
+              shadowOffset: { width: 0, height: 4 },
+              shadowOpacity: isDark ? 0.45 : 0.07,
+              shadowRadius: 12,
+              elevation: isDark ? 0 : 4,
+            },
+          ]}
+        >
+          <View style={styles.aptSummaryShellRow}>
+            <View style={[styles.aptSummaryAccent, { backgroundColor: accent }]} />
+            <View style={styles.aptSummaryBody}>
+              <TouchableOpacity
+                activeOpacity={0.82}
+                onPress={() => setAptPerFloorEditorOpen(true)}
+                accessibilityRole="button"
+                accessibilityLabel="Ouvrir le détail des appartements par étage"
+              >
+                <View style={styles.aptSummaryCollapsedHeader}>
+                  <View style={styles.aptSummaryHeaderTexts}>
+                    <Text style={[styles.aptSummaryKicker, { color: kickerColor }]}>Répartition</Text>
+                    <View style={styles.aptSummaryHeadlineRow}>
+                      <Text style={[styles.aptSummaryHeadline, { color: headlineColor }]} numberOfLines={1}>
+                        Appartements par étage
+                      </Text>
+                      <View style={[styles.aptSummaryCountPill, { backgroundColor: isDark ? '#1e3a5f' : '#e0e7ff' }]}>
+                        <Text style={[styles.aptSummaryCountPillText, { color: accent }]}>
+                          {floorCount} niv.
+                        </Text>
+                      </View>
+                    </View>
+                  </View>
+                  <View
+                    style={[
+                      styles.aptSummaryChevronCircle,
+                      { backgroundColor: chevronBg, borderColor: chevronBorder },
+                    ]}
+                  >
+                    <Text style={[styles.aptSummaryChevronInCircle, { color: accent }]}>↓</Text>
+                  </View>
+                </View>
+              </TouchableOpacity>
+
+              <View
+                style={[
+                  styles.aptSummaryChipsSurface,
+                  { backgroundColor: surfaceBg, borderColor: surfaceBorder },
+                ]}
+              >
+                {summaryChipsRow}
+              </View>
+
+              <TouchableOpacity
+                activeOpacity={0.82}
+                onPress={() => setAptPerFloorEditorOpen(true)}
+                accessibilityRole="button"
+                accessibilityLabel="Ouvrir pour modifier les appartements par étage"
+              >
+                <Text style={[styles.aptSummaryMicroHint, { color: kickerColor }]}>
+                  Toucher pour ouvrir et modifier
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      );
+    }
+
+    return (
+      <View
+        style={[
+          styles.aptCard,
+          {
+            borderColor: isDark ? '#334155' : '#e2e8f0',
+            backgroundColor: isDark ? '#111827' : '#f8fafc',
+          },
+        ]}
+      >
+        <View style={styles.aptCardHeaderRow}>
+          <Text style={[styles.aptCardTitle, { color: isDark ? '#f8fafc' : '#0f172a', flex: 1, marginBottom: 0 }]}>
+            Nombre d'appartements par étage
+          </Text>
+          <TouchableOpacity
+            onPress={() => setAptPerFloorEditorOpen(false)}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            style={[styles.aptCollapseButton, { backgroundColor: isDark ? '#1e293b' : '#e2e8f0' }]}
+          >
+            <Text style={[styles.aptCollapseButtonText, { color: isDark ? '#e2e8f0' : '#0f172a' }]}>Réduire</Text>
+          </TouchableOpacity>
+        </View>
+        <View style={styles.aptExpandedSummaryBlock}>
+          <Text style={[styles.aptExpandedSummaryLabel, { color: isDark ? '#94a3b8' : '#64748b' }]}>
+            Résumé
+          </Text>
+          {summaryChipsRow}
+        </View>
+        <Text style={[styles.aptCardHint, { color: isDark ? '#94a3b8' : '#64748b', marginTop: -6 }]}>
+          Selon « Nbre Étages » ({rawEtagesDisplay}) : 1 niveau RDC
+          {upper > 0 ? ` + ${upper} étage${upper > 1 ? 's' : ''}` : ''}.
+        </Text>
+        {Array.from({ length: floorCount }, (_, i) => (
+          <View
+            key={`apt-floor-${buildingIndex}-${i}`}
+            style={[
+              styles.aptRow,
+              {
+                borderBottomColor: isDark ? '#1f2937' : '#e2e8f0',
+                borderBottomWidth: i < floorCount - 1 ? StyleSheet.hairlineWidth : 0,
+              },
+            ]}
+          >
+            <View style={styles.aptRowLeft}>
+              <View
+                style={[
+                  styles.aptBadge,
+                  { backgroundColor: isDark ? '#1e3a5f' : '#eff6ff', borderColor: isDark ? '#3b82f6' : '#bfdbfe' },
+                ]}
+              >
+                <Text style={[styles.aptBadgeText, { color: isDark ? '#bfdbfe' : '#1d4ed8' }]}>
+                  {floorLevelBadge(i)}
+                </Text>
+              </View>
+              <Text style={[styles.aptRowLabel, { color: isDark ? '#e2e8f0' : '#334155' }]} numberOfLines={2}>
+                {floorLevelTitle(i)}
+              </Text>
+            </View>
+            <TextInput
+              style={[
+                styles.aptInput,
+                {
+                  backgroundColor: isDark ? '#0f172a' : '#fff',
+                  borderColor: isDark ? '#334155' : '#cbd5e1',
+                  color: isDark ? '#fff' : '#0f172a',
+                },
+              ]}
+              value={map[String(i)] ?? ''}
+              onChangeText={(t) => setFloorValue(i, t)}
+              placeholder="—"
+              placeholderTextColor={isDark ? '#64748b' : '#94a3b8'}
+              keyboardType="number-pad"
+              maxLength={4}
+            />
+          </View>
+        ))}
+        <View style={[styles.aptSumRow, { borderTopColor: isDark ? '#334155' : '#e2e8f0' }]}>
+          <Text style={[styles.aptSumLabel, { color: isDark ? '#94a3b8' : '#64748b' }]}>Total (saisi)</Text>
+          <Text style={[styles.aptSumValue, { color: isDark ? '#93c5fd' : '#2563eb' }]}>{sum}</Text>
+        </View>
+      </View>
+    );
   };
 
   const renderInputField = (label: string, field: keyof Building, multiline?: boolean) => {
@@ -2108,12 +2491,14 @@ export default function DetailImmeubleScreen() {
             >
               <Text style={styles.buildingMenuActionText}>Afficher PDF plan tirage et fusion</Text>
             </TouchableOpacity>
+            {currentUserRole === 'manager' ? (
             <TouchableOpacity
               onPress={archiveCurrentBuilding}
               style={[styles.buildingMenuAction, { backgroundColor: '#dc2626' }]}
             >
               <Text style={styles.buildingMenuActionText}>Archiver cet immeuble</Text>
             </TouchableOpacity>
+            ) : null}
             <TouchableOpacity
               onPress={() => setShowBuildingMenu(false)}
               style={[styles.buildingMenuAction, { backgroundColor: isDark ? '#374151' : '#e2e8f0' }]}
@@ -2133,9 +2518,14 @@ export default function DetailImmeubleScreen() {
             onScroll={handleDetailScroll}
             scrollEventThrottle={16}
           >
+            <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
             <View style={styles.tableContainer}>
               {renderTableHeader()}
               {buildingsData.map((building, index) => renderBuildingRow(building, index))}
+            </View>
+            <View style={{ width: 360, maxWidth: screenWidth * 0.42, marginLeft: 16, marginBottom: 20, flexShrink: 0 }}>
+              {renderAppartementsParNiveau(0)}
+            </View>
             </View>
 
             <TouchableOpacity style={[styles.saveButton, { backgroundColor: '#007AFF' }]} onPress={handleSave}>
@@ -2241,6 +2631,7 @@ export default function DetailImmeubleScreen() {
         <ScrollView
           style={styles.scrollView}
           showsVerticalScrollIndicator={false}
+          nestedScrollEnabled
           onScroll={handleDetailScroll}
           scrollEventThrottle={16}
         >
@@ -2251,6 +2642,7 @@ export default function DetailImmeubleScreen() {
             {renderInputField('ID Immeuble', 'idImmeuble')}
             {renderInputField('ID Immeuble Système', 'idImmeubleSysteme')}
             {renderInputField('Ville', 'ville')}
+            {renderInputField('Zone', 'zone')}
             {renderInputField('Code Postal', 'codePostal')}
           </View>
 
@@ -2320,6 +2712,7 @@ export default function DetailImmeubleScreen() {
             </Text>
             {renderInputField('Utilisation Immeuble', 'utilisationImmeuble')}
             {renderInputField('Nbre Etages', 'nbreEtages')}
+            {renderAppartementsParNiveau(0)}
             {renderInputField('Sous Sol', 'sousSol')}
             {renderInputField('Sous Sol Commun', 'sousSolCommun')}
             {renderInputField('Solution de Raccordement', 'solutionRaccordement')}
@@ -2339,6 +2732,7 @@ export default function DetailImmeubleScreen() {
               Infrastructure Fibre
             </Text>
             {renderInputField('Chemin de Fibre PBO1', 'cheminFibrePBO1')}
+            {renderInputField('BPO1', 'bpo1')}
             {renderInputField('Floor PBO1', 'floorPBO1')}
             {renderInputField('Type PBO1', 'typePBO1')}
             {renderInputField('PBO2', 'PBO2')}
@@ -2352,8 +2746,143 @@ export default function DetailImmeubleScreen() {
             </Text>
             {renderInputField('SYNDIC', 'syndic')}
             {renderInputField('Num Syndic', 'numSyndic')}
+            <TouchableOpacity
+              activeOpacity={0.85}
+              onPress={() => setShowSyndicSignatureModal(true)}
+              style={[
+                styles.syndicSignatureButton,
+                { backgroundColor: isDark ? '#1e3a5f' : '#eff6ff', borderColor: isDark ? '#3b82f6' : '#93c5fd' },
+              ]}
+            >
+              <Text style={[styles.syndicSignatureButtonIcon, { color: isDark ? '#7dd3fc' : '#2563eb' }]}>✎</Text>
+              <View style={styles.syndicSignatureButtonTextCol}>
+                <Text style={[styles.syndicSignatureButtonTitle, { color: isDark ? '#f8fafc' : '#0f172a' }]}>
+                  Autorisation d&apos;installation — signature syndic
+                </Text>
+                <Text style={[styles.syndicSignatureButtonSubtitle, { color: isDark ? '#94a3b8' : '#64748b' }]}>
+                  {syndicSigData ? 'Signer à nouveau ou consulter la signature enregistrée' : 'Ouvrir le formulaire de signature manuscrite'}
+                </Text>
+              </View>
+              <Text style={[styles.syndicSignatureButtonChevron, { color: isDark ? '#64748b' : '#94a3b8' }]}>›</Text>
+            </TouchableOpacity>
+            {syndicSigData ? (
+              <View
+                style={[
+                  styles.syndicSignaturePreview,
+                  { borderColor: isDark ? '#334155' : '#e2e8f0', backgroundColor: isDark ? '#0f172a' : '#fff' },
+                ]}
+              >
+                <Text style={[styles.syndicSignaturePreviewLabel, { color: isDark ? '#94a3b8' : '#64748b' }]}>
+                  Signature enregistrée
+                </Text>
+                <Image
+                  source={{ uri: syndicSigData }}
+                  style={styles.syndicSignaturePreviewImage}
+                  resizeMode="contain"
+                />
+                {firstBuilding.syndicInstallationAuthSignedAt ? (
+                  <Text style={[styles.syndicSignaturePreviewDate, { color: isDark ? '#64748b' : '#94a3b8' }]}>
+                    {(() => {
+                      try {
+                        return new Date(String(firstBuilding.syndicInstallationAuthSignedAt)).toLocaleString('fr-FR', {
+                          dateStyle: 'short',
+                          timeStyle: 'short',
+                        });
+                      } catch {
+                        return String(firstBuilding.syndicInstallationAuthSignedAt);
+                      }
+                    })()}
+                  </Text>
+                ) : null}
+              </View>
+            ) : null}
             {renderInputField('Remarques', 'remarques', true)}
           </View>
+
+          <Modal
+            visible={showSyndicSignatureModal}
+            animationType="slide"
+            presentationStyle="pageSheet"
+            onRequestClose={() => setShowSyndicSignatureModal(false)}
+          >
+            <View style={[styles.syndicSignatureModalRoot, { backgroundColor: isDark ? '#0f172a' : '#f8fafc' }]}>
+              <View style={styles.syndicSignatureModalHeader}>
+                <Text style={[styles.syndicSignatureModalTitle, { color: isDark ? '#f8fafc' : '#0f172a' }]}>
+                  Autorisation syndic
+                </Text>
+                <TouchableOpacity onPress={() => setShowSyndicSignatureModal(false)} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
+                  <Text style={[styles.syndicSignatureModalClose, { color: isDark ? '#94a3b8' : '#64748b' }]}>Fermer</Text>
+                </TouchableOpacity>
+              </View>
+              <Text style={[styles.syndicSignatureModalBlurb, { color: isDark ? '#cbd5e1' : '#475569' }]}>
+                Le syndic signe ici pour attester son accord pour les travaux d&apos;installation et de raccordement fibre sur la copropriété.
+              </Text>
+              {Platform.OS === 'ios' || Platform.OS === 'android' ? (
+                <View style={styles.syndicSignatureModalBody}>
+                  <SignatureCanvas
+                    ref={syndicSignatureRef}
+                    onOK={(dataUrl) => {
+                      void handleSyndicSignatureConfirm(dataUrl);
+                    }}
+                    onEmpty={() =>
+                      Alert.alert(
+                        'Signature vide',
+                        'Tracez votre signature dans le cadre, puis appuyez sur « Confirmer ».',
+                      )
+                    }
+                    descriptionText=""
+                    clearText=""
+                    confirmText=""
+                    penColor="#0f172a"
+                    minWidth={0.8}
+                    maxWidth={3}
+                    backgroundColor="#ffffff"
+                    style={styles.syndicSignaturePad}
+                    webStyle=".m-signature-pad--footer { display: none !important; height: 0 !important; margin: 0 !important; padding: 0 !important; border: 0 !important; overflow: hidden !important; } .m-signature-pad { box-shadow: none; border-radius: 12px; border: 1px solid #e2e8f0; } .m-signature-pad--body { border-radius: 12px; } body,html { height: 100%; background:#fff; }"
+                    dataURL={syndicSigRestoreUrl}
+                    nestedScrollEnabled
+                    webviewProps={{ androidLayerType: 'hardware' }}
+                  />
+                  <View style={styles.syndicSignatureActionsRow}>
+                    <TouchableOpacity
+                      style={[
+                        styles.syndicSignatureActionSecondary,
+                        { borderColor: isDark ? '#475569' : '#cbd5e1', opacity: syndicSigSaving ? 0.5 : 1 },
+                      ]}
+                      onPress={() => syndicSignatureRef.current?.clearSignature()}
+                      disabled={syndicSigSaving}
+                      accessibilityRole="button"
+                      accessibilityLabel="Effacer la signature"
+                    >
+                      <Text style={[styles.syndicSignatureActionSecondaryText, { color: isDark ? '#e2e8f0' : '#334155' }]}>
+                        Effacer
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[
+                        styles.syndicSignatureActionPrimary,
+                        { backgroundColor: isDark ? '#2563eb' : '#1d4ed8', opacity: syndicSigSaving ? 0.85 : 1 },
+                      ]}
+                      onPress={() => syndicSignatureRef.current?.readSignature()}
+                      disabled={syndicSigSaving}
+                      accessibilityRole="button"
+                      accessibilityLabel="Confirmer et enregistrer la signature"
+                    >
+                      {syndicSigSaving ? (
+                        <ActivityIndicator color="#f8fafc" />
+                      ) : (
+                        <Text style={styles.syndicSignatureActionPrimaryText}>Confirmer</Text>
+                      )}
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              ) : (
+                <Text style={[styles.syndicSignatureWebNote, { color: isDark ? '#fbbf24' : '#b45309' }]}>
+                  La signature manuscrite est disponible sur l&apos;application mobile (iOS ou Android), pas dans le navigateur web.
+                </Text>
+              )}
+            </View>
+          </Modal>
 
           <View style={styles.section}>
             <Text style={[styles.sectionTitle, { color: isDark ? '#fff' : '#000' }]}>
@@ -2924,6 +3453,362 @@ const styles = StyleSheet.create({
   },
   bottomSpacing: {
     height: 30,
+  },
+  aptSummaryShell: {
+    borderRadius: 20,
+    borderWidth: 1,
+    marginTop: 8,
+    marginBottom: 18,
+    overflow: 'hidden',
+  },
+  aptSummaryShellRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+  },
+  aptSummaryAccent: {
+    width: 5,
+    alignSelf: 'stretch',
+  },
+  aptSummaryBody: {
+    flex: 1,
+    paddingTop: 14,
+    paddingRight: 14,
+    paddingBottom: 14,
+    paddingLeft: 12,
+    gap: 12,
+    minWidth: 0,
+  },
+  aptSummaryCollapsedHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  aptSummaryHeaderTexts: {
+    flex: 1,
+    minWidth: 0,
+  },
+  aptSummaryKicker: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
+    marginBottom: 4,
+  },
+  aptSummaryHeadlineRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  aptSummaryHeadline: {
+    fontSize: 16,
+    fontWeight: '800',
+    letterSpacing: -0.3,
+    flex: 1,
+    minWidth: 120,
+  },
+  aptSummaryCountPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    flexShrink: 0,
+  },
+  aptSummaryCountPillText: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.2,
+  },
+  aptSummaryChevronCircle: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  aptSummaryChevronInCircle: {
+    fontSize: 16,
+    fontWeight: '800',
+    marginTop: 1,
+  },
+  aptSummaryChipsSurface: {
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+  },
+  aptSummaryMicroHint: {
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 0.15,
+  },
+  aptSummaryChipsScroll: {
+    maxHeight: 72,
+    flexGrow: 0,
+  },
+  aptSummaryChipsContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 2,
+    paddingRight: 4,
+  },
+  aptSummaryChipSep: {
+    width: StyleSheet.hairlineWidth * 2,
+    minWidth: 2,
+    height: 28,
+    borderRadius: 1,
+    opacity: 0.85,
+  },
+  aptSummaryChip: {
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    minWidth: 54,
+    alignItems: 'center',
+    borderWidth: 1,
+  },
+  aptSummaryChipLabel: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+  },
+  aptSummaryChipValue: {
+    fontSize: 18,
+    fontWeight: '800',
+    marginTop: 2,
+    fontVariant: ['tabular-nums'],
+  },
+  aptExpandedSummaryBlock: {
+    marginBottom: 10,
+  },
+  aptExpandedSummaryLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    marginBottom: 8,
+  },
+  syndicSignatureButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 14,
+    borderWidth: 1.5,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    marginBottom: 14,
+    gap: 12,
+  },
+  syndicSignatureButtonIcon: {
+    fontSize: 22,
+    fontWeight: '700',
+  },
+  syndicSignatureButtonTextCol: {
+    flex: 1,
+    minWidth: 0,
+  },
+  syndicSignatureButtonTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  syndicSignatureButtonSubtitle: {
+    fontSize: 12,
+    marginTop: 4,
+    lineHeight: 16,
+  },
+  syndicSignatureButtonChevron: {
+    fontSize: 22,
+    fontWeight: '300',
+  },
+  syndicSignaturePreview: {
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 12,
+    marginBottom: 16,
+  },
+  syndicSignaturePreviewLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+    marginBottom: 8,
+  },
+  syndicSignaturePreviewImage: {
+    width: '100%',
+    height: 120,
+    borderRadius: 8,
+  },
+  syndicSignaturePreviewDate: {
+    fontSize: 12,
+    marginTop: 8,
+    fontWeight: '600',
+  },
+  syndicSignatureModalRoot: {
+    flex: 1,
+    paddingTop: Platform.OS === 'ios' ? 52 : 28,
+    paddingHorizontal: 18,
+    paddingBottom: 24,
+  },
+  syndicSignatureModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 14,
+  },
+  syndicSignatureModalTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    letterSpacing: -0.3,
+    flex: 1,
+    paddingRight: 12,
+  },
+  syndicSignatureModalClose: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  syndicSignatureModalBlurb: {
+    fontSize: 14,
+    lineHeight: 21,
+    marginBottom: 16,
+  },
+  syndicSignatureModalBody: {
+    flex: 1,
+    minHeight: 0,
+    width: '100%',
+  },
+  syndicSignatureActionsRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 14,
+    paddingBottom: 4,
+  },
+  syndicSignatureActionSecondary: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    borderRadius: 12,
+    borderWidth: 1.5,
+  },
+  syndicSignatureActionSecondaryText: {
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  syndicSignatureActionPrimary: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    borderRadius: 12,
+    minHeight: 50,
+  },
+  syndicSignatureActionPrimaryText: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#f8fafc',
+  },
+  syndicSignatureWebNote: {
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
+  },
+  syndicSignaturePad: {
+    flex: 1,
+    minHeight: 220,
+    width: '100%',
+    maxHeight: 420,
+  },
+  aptCardHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+    gap: 8,
+  },
+  aptCollapseButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  aptCollapseButtonText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  aptCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 14,
+    marginTop: 4,
+    marginBottom: 18,
+  },
+  aptCardTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: 6,
+  },
+  aptCardHint: {
+    fontSize: 12,
+    lineHeight: 17,
+    marginBottom: 12,
+  },
+  aptRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    gap: 12,
+  },
+  aptRowLeft: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    minWidth: 0,
+  },
+  aptBadge: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  aptBadgeText: {
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  aptRowLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    flex: 1,
+  },
+  aptInput: {
+    width: 72,
+    height: 44,
+    borderRadius: 10,
+    borderWidth: 1,
+    textAlign: 'center',
+    fontSize: 16,
+    fontWeight: '700',
+    paddingHorizontal: 4,
+  },
+  aptSumRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  aptSumLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  aptSumValue: {
+    fontSize: 18,
+    fontWeight: '800',
   },
   // Table styles for web
   tableContainer: {

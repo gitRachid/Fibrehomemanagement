@@ -476,7 +476,7 @@ export default function SelectionScreen() {
 
   const archiveZone = async (z: ZoneRow) => {
     if (!canManageZones) {
-      Alert.alert('Accès refusé', 'Seuls les gestionnaires peuvent archiver une zone.');
+      Alert.alert('Accès refusé', 'Seul le manager peut archiver une zone.');
       return;
     }
     Alert.alert('Archiver la zone', `Archiver la zone "${z.label}" ?`, [
@@ -487,11 +487,7 @@ export default function SelectionScreen() {
         onPress: async () => {
           setIsArchiving(true);
           try {
-            const zoneBuildings = buildings.filter((building) => getZoneKey((building as { zone?: string }).zone) === z.zone);
-            for (const building of zoneBuildings) {
-              const id = building._id || building.idImmeuble;
-              if (id) await buildingsApi.archive(id);
-            }
+            await buildingsApi.archiveByZone(z.zone);
 
             const nextArchived = Array.from(new Set([...archivedZones, z.zone]));
             setArchivedZones(nextArchived);

@@ -102,13 +102,66 @@ router.get('/', async (req, res) => {
 router.get('/service/:serviceId', async (req, res) => {
   try {
     const { status = 'active' } = req.query;
-    const query = await applyTechnicianAccessFilter(req, {
-      serviceId: req.params.serviceId,
-      status
-    });
+    const serviceQuery = { serviceId: req.params.serviceId };
+    if (status && status !== 'all') serviceQuery.status = status;
+    const query = await applyTechnicianAccessFilter(req, serviceQuery);
     const buildings = await Building.find(query).populate('photos');
 
     res.json({ success: true, count: buildings.length, data: buildings });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Syndic installation authorization signature only (technician scope enforced)
+router.patch('/:id/syndic-installation-auth', async (req, res) => {
+  try {
+    const { clear, syndicInstallationAuthSignature, syndicInstallationAuthSignedAt } = req.body || {};
+    const filter = {
+      $or: [{ _id: req.params.id }, { idImmeuble: req.params.id }],
+    };
+
+    const existing = await Building.findOne(filter);
+    if (!existing) {
+      return res.status(404).json({ success: false, message: 'Building not found' });
+    }
+    if (!(await canUserAccessBuilding(req, existing))) {
+      return res.status(404).json({ success: false, message: 'Building not found' });
+    }
+
+    let update;
+    if (clear === true) {
+      update = {
+        syndicInstallationAuthSignature: '',
+        syndicInstallationAuthSignedAt: '',
+        lastModified: new Date(),
+      };
+    } else {
+      const sig =
+        typeof syndicInstallationAuthSignature === 'string' ? syndicInstallationAuthSignature.trim() : '';
+      if (!sig) {
+        return res.status(400).json({
+          success: false,
+          message: 'syndicInstallationAuthSignature is required unless clear is true',
+        });
+      }
+      const signedAt =
+        typeof syndicInstallationAuthSignedAt === 'string' && syndicInstallationAuthSignedAt.trim()
+          ? syndicInstallationAuthSignedAt.trim()
+          : new Date().toISOString();
+      update = {
+        syndicInstallationAuthSignature: sig,
+        syndicInstallationAuthSignedAt: signedAt,
+        lastModified: new Date(),
+      };
+    }
+
+    const building = await Building.findOneAndUpdate(filter, update, {
+      new: true,
+      runValidators: true,
+    }).populate('photos');
+
+    res.json({ success: true, data: building });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -186,9 +239,13 @@ router.put('/:id', async (req, res) => {
   }
 });
 
-// Delete/Archive building
+// Delete/Archive building (manager only when authenticated)
 router.delete('/:id', async (req, res) => {
   try {
+    if (req.user && req.user.role !== 'manager') {
+      return res.status(403).json({ success: false, message: 'Forbidden' });
+    }
+
     const building = await Building.findOneAndUpdate(
       { 
         $or: [
@@ -231,6 +288,48 @@ router.post('/bulk-update', async (req, res) => {
     res.json({
       success: true,
       message: `${result.modifiedCount} buildings updated, ${result.upsertedCount} created`
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Archive all buildings for a zone (manager only when authenticated)
+router.post('/archive-by-zone', async (req, res) => {
+  try {
+    if (req.user && req.user.role !== 'manager') {
+      return res.status(403).json({ success: false, message: 'Forbidden' });
+    }
+
+    const rawZone = req.body?.zone;
+    if (rawZone === undefined || rawZone === null) {
+      return res.status(400).json({ success: false, message: 'zone is required' });
+    }
+
+    const zoneKey = String(rawZone).trim();
+    const now = new Date();
+
+    let filter;
+    if (zoneKey === '' || zoneKey === '__none__') {
+      filter = {
+        status: { $ne: 'archived' },
+        $or: [{ zone: '' }, { zone: { $exists: false } }, { zone: null }],
+      };
+    } else {
+      filter = {
+        status: { $ne: 'archived' },
+        zone: zoneKey,
+      };
+    }
+
+    const result = await Building.updateMany(filter, {
+      $set: { status: 'archived', lastModified: now },
+    });
+
+    res.json({
+      success: true,
+      matchedCount: result.matchedCount,
+      modifiedCount: result.modifiedCount,
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });

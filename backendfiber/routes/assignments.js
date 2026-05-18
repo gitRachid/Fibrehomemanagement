@@ -51,14 +51,22 @@ router.get('/', async (req, res) => {
   }
 });
 
-// Get assignments for a building
+// Get assignments for a building (accepts Mongo _id or idImmeuble — must match stored itemId)
 router.get('/building/:buildingId', async (req, res) => {
   try {
-    const assignments = await Assignment.find({ 
-      itemId: req.params.buildingId,
-      status: 'active'
-    })
-      .populate('technicianIds');
+    const resolvedBuildingId = await resolveBuildingId(req.params.buildingId);
+    const queryId =
+      resolvedBuildingId ||
+      (isValidObjectId(req.params.buildingId) ? req.params.buildingId : null);
+
+    if (!queryId) {
+      return res.json({ success: true, data: [] });
+    }
+
+    const assignments = await Assignment.find({
+      itemId: queryId,
+      status: 'active',
+    }).populate('technicianIds');
 
     res.json({ success: true, data: assignments });
   } catch (error) {

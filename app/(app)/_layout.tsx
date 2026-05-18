@@ -57,8 +57,6 @@ export default function AppLayout() {
           ),
         }}
       />
-      <Tabs.Screen name="assignments" options={{ href: null }} />
-      <Tabs.Screen name="details" options={{ href: null }} />
       <Tabs.Screen name="detailImmeuble" options={{ href: null }} />
       <Tabs.Screen name="infoImmeuble" options={{ href: null }} />
       <Tabs.Screen name="kmzMap" options={{ href: null }} />

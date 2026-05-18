@@ -55,6 +55,11 @@ const buildingSchema = new mongoose.Schema({
     type: String,
     default: '0'
   },
+  /** JSON string: { "0": "4", "1": "6", ... } — index 0 = RDC, puis chaque étage au-dessus */
+  nbreAppartementsParEtage: {
+    type: String,
+    default: ''
+  },
   sousSol: {
     type: String,
     default: '0'
@@ -101,6 +106,10 @@ const buildingSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  bpo1: {
+    type: String,
+    default: ''
+  },
   floorPBO1: {
     type: String,
     default: ''
@@ -128,6 +137,16 @@ const buildingSchema = new mongoose.Schema({
     default: ''
   },
   numSyndic: {
+    type: String,
+    default: ''
+  },
+  /** data:image/png;base64,... — signature manuscrite syndic (autorisation installation) */
+  syndicInstallationAuthSignature: {
+    type: String,
+    default: ''
+  },
+  /** ISO 8601 — date/heure de la signature */
+  syndicInstallationAuthSignedAt: {
     type: String,
     default: ''
   },

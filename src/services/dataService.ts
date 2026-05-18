@@ -274,6 +274,12 @@ class DataService {
         await assignmentsApi.create(assignment);
         return true;
       } catch {
+        await this.queueChange({
+          entity: 'assignment',
+          action: 'create',
+          payload: assignment,
+        });
+        return false;
       }
     }
 

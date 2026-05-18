@@ -1,6 +1,7 @@
 const express = require('express');
 const XlsxPopulate = require('xlsx-populate');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const mongoose = require('mongoose');
 const JSZip = require('jszip');
@@ -137,6 +138,18 @@ const PHOTO_TEMPLATE_CONFIG = [
     placeholders: ['{{photo_autre}}'],
     depart: '',
     arrive: '',
+  },
+  // data URL enregistrée sur l’immeuble — image ancrée sur la plage W45:AA52 (zone signature).
+  {
+    type: '__SYNDIC_SIGNATURE__',
+    placeholders: [
+      '{{syndicInstallationAuthSignature}}',
+      '{{SYNDICINSTALLATIONAUTHSIGNATURE}}',
+      '{{syndicinstallationauthsignature}}',
+      '{{SyndicInstallationAuthSignature}}',
+    ],
+    depart: 'W45',
+    arrive: 'AA52',
   },
   // Compatibilité anciens templates.
   {
@@ -400,7 +413,9 @@ const cleanupPlaceholdersInXlsxBuffer = async (buffer, replacements) => {
     let xml = await file.async('string');
     const originalXml = xml;
     for (const token of tokens) {
-      xml = xml.split(token).join(replacements[token] || '');
+      const raw = replacements[token];
+      const safe = raw == null || isBlankExcelValue(raw) ? '' : String(raw);
+      xml = xml.split(token).join(safe);
     }
     if (xml !== originalXml) zip.file(fileName, xml);
   }
@@ -435,18 +450,40 @@ const getAddress = (building) =>
     .filter(Boolean)
     .join(' ');
 
-const formatReplacementValue = (value) => {
-  if (value == null) return '';
-  if (value instanceof Date) return value.toLocaleString('fr-FR', { timeZone: 'Africa/Casablanca' });
-  if (value instanceof mongoose.Types.ObjectId) return String(value);
-  if (Array.isArray(value)) return value.map(formatReplacementValue).filter(Boolean).join(', ');
-  if (typeof value === 'object') {
-    if (typeof value.toString === 'function' && value.toString() !== '[object Object]') {
-      return value.toString();
-    }
-    return JSON.stringify(value);
+const isBlankExcelValue = (value) => {
+  if (value == null) return true;
+  if (typeof value === 'number' && Number.isNaN(value)) return true;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return true;
+    const lower = trimmed.toLowerCase();
+    if (lower === 'undefined' || lower === 'null' || lower === 'nan') return true;
+    if (trimmed === '""' || trimmed === "''") return true;
   }
-  return String(value);
+  return false;
+};
+
+const formatReplacementValue = (value) => {
+  if (isBlankExcelValue(value)) return '';
+  if (value instanceof Date) return value.toLocaleString('fr-FR', { timeZone: 'Africa/Casablanca' });
+  if (value instanceof mongoose.Types.ObjectId) {
+    const id = String(value);
+    return id || '';
+  }
+  if (Array.isArray(value)) {
+    const parts = value.map(formatReplacementValue).filter((part) => part !== '');
+    return parts.join(', ');
+  }
+  if (typeof value === 'object') {
+    if (Object.keys(value).length === 0) return '';
+    if (typeof value.toString === 'function' && value.toString() !== '[object Object]') {
+      const text = String(value.toString()).trim();
+      return isBlankExcelValue(text) ? '' : text;
+    }
+    return '';
+  }
+  const text = String(value).trim();
+  return isBlankExcelValue(text) ? '' : text;
 };
 
 const getUserLabel = (user) => {
@@ -467,10 +504,26 @@ const addReplacementToken = (acc, key, value) => {
   }
 };
 
+/** Modèles Excel : espaces dans les balises, ou libellés UPPER_SNAKE différents des clés Mongoose. */
+const addBraceSpacedAliases = (tokenMap, innerName, rawValue) => {
+  const v = formatReplacementValue(rawValue);
+  const inner = String(innerName).trim();
+  if (!inner) return;
+  const forms = [
+    `{{${inner}}}`,
+    `{{ ${inner} }}`,
+    `{{ ${inner}}}`,
+    `{{${inner} }}`,
+  ];
+  for (const t of forms) {
+    tokenMap[t] = v;
+  }
+};
+
 const buildReplacements = (building, user) => {
   const plain = building.toObject ? building.toObject() : building;
   const replacements = Object.entries(plain).reduce((acc, [key, value]) => {
-    if (key === 'photos') return acc;
+    if (key === 'photos' || key === 'syndicInstallationAuthSignature') return acc;
     acc[key] = value;
     return acc;
   }, {
@@ -482,10 +535,43 @@ const buildReplacements = (building, user) => {
     technicien: getUserLabel(user),
   });
 
-  return Object.entries(replacements).reduce((acc, [key, value]) => {
+  const tokenMap = Object.entries(replacements).reduce((acc, [key, value]) => {
     addReplacementToken(acc, key, value);
     return acc;
   }, {});
+
+  addBraceSpacedAliases(tokenMap, 'SYNDIC', plain.syndic);
+  addBraceSpacedAliases(tokenMap, 'syndic', plain.syndic);
+  addBraceSpacedAliases(tokenMap, 'NUM_SYNDIC', plain.numSyndic);
+  addBraceSpacedAliases(tokenMap, 'num_syndic', plain.numSyndic);
+
+  return tokenMap;
+};
+
+const SYNDIC_SIGNATURE_PHOTO_TYPE = '__SYNDIC_SIGNATURE__';
+
+/** Décode data:image/png|jpeg;base64,... vers un fichier temporaire pour insertion XLSX. */
+const tryWriteSyndicSignatureTempFile = (building) => {
+  const plain = building?.toObject ? building.toObject() : building;
+  const raw = plain?.syndicInstallationAuthSignature;
+  const s = typeof raw === 'string' ? raw.trim() : '';
+  if (!s.startsWith('data:image')) return null;
+  const m = s.match(/^data:image\/(png|jpeg|jpg);base64,([\s\S]+)$/i);
+  if (!m) return null;
+  const ext = String(m[1]).toLowerCase() === 'png' ? 'png' : 'jpeg';
+  const mimeType = ext === 'png' ? 'image/png' : 'image/jpeg';
+  try {
+    const buf = Buffer.from(String(m[2]).replace(/\s+/g, ''), 'base64');
+    if (!buf.length) return null;
+    const tmp = path.join(
+      os.tmpdir(),
+      `syndic-sig-${String(plain._id || 'b')}-${Date.now()}.${ext}`,
+    );
+    fs.writeFileSync(tmp, buf);
+    return { filePath: tmp, mimeType };
+  } catch {
+    return null;
+  }
 };
 
 const getImageExtension = (photo) => {
@@ -523,10 +609,10 @@ const parseRangeRef = (rangeRef) => {
 };
 
 const replaceTextTokens = (value, replacements) => {
-  return Object.entries(replacements).reduce(
-    (nextValue, [token, replacement]) => nextValue.split(token).join(replacement),
-    value,
-  );
+  return Object.entries(replacements).reduce((nextValue, [token, replacement]) => {
+    const safe = replacement == null || isBlankExcelValue(replacement) ? '' : String(replacement);
+    return nextValue.split(token).join(safe);
+  }, value);
 };
 
 const replacePlaceholdersXlsxPopulate = (workbook, replacements) => {
@@ -559,6 +645,7 @@ const replacePlaceholdersXlsxPopulate = (workbook, replacements) => {
 };
 
 router.get('/building/:id', async (req, res) => {
+  let syndicSignatureTempPath = null;
   try {
     const templatePath = getTemplatePath();
     if (!templatePath) {
@@ -578,12 +665,40 @@ router.get('/building/:id', async (req, res) => {
     }
 
     const photos = await Photo.find({ buildingId: building._id }).sort({ timestamp: -1 });
+    if (!photos || photos.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Au moins une photo est requise pour générer le dossier technique.',
+      });
+    }
+
     const replacements = buildReplacements(building, req.user);
     const workbook = await XlsxPopulate.fromFileAsync(templatePath);
     const photoCells = replacePlaceholdersXlsxPopulate(workbook, replacements);
 
     const excelBuffer = await workbook.outputAsync();
-    const photoBuffer = await insertPhotosIntoXlsxBuffer(Buffer.from(excelBuffer), photoCells, photos);
+
+    const sigFile = tryWriteSyndicSignatureTempFile(building);
+    if (sigFile?.filePath) syndicSignatureTempPath = sigFile.filePath;
+
+    const photosForInsert =
+      sigFile?.filePath
+        ? [
+            ...photos,
+            {
+              type: SYNDIC_SIGNATURE_PHOTO_TYPE,
+              filePath: sigFile.filePath,
+              name: 'Signature syndic',
+              mimeType: sigFile.mimeType,
+            },
+          ]
+        : [...photos];
+
+    const photoBuffer = await insertPhotosIntoXlsxBuffer(
+      Buffer.from(excelBuffer),
+      photoCells,
+      photosForInsert,
+    );
     const buffer = await cleanupPlaceholdersInXlsxBuffer(photoBuffer, replacements);
     const fileName = `dossier_technique_${sanitizeFileName(building.idImmeuble)}.xlsx`;
     const rootCopyPath = path.join(getProjectRootPath(), fileName);
@@ -600,6 +715,14 @@ router.get('/building/:id', async (req, res) => {
   } catch (error) {
     console.error('[TECHNICAL_DOSSIER_EXPORT] failed', error);
     return res.status(500).json({ success: false, message: error.message });
+  } finally {
+    if (syndicSignatureTempPath) {
+      try {
+        fs.unlinkSync(syndicSignatureTempPath);
+      } catch {
+        /* ignore */
+      }
+    }
   }
 });
 

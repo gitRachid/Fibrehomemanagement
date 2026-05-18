@@ -4,12 +4,15 @@ import { apiDataField, apiListField } from '@/api/client';
 
 const BUILDINGS_KEY = 'buildings';
 
-export const useBuildings = (serviceId?: string, options?: { status?: string; search?: string }) => {
+export const useBuildings = (
+  serviceId?: string,
+  options?: { status?: string; search?: string; page?: number; limit?: number },
+) => {
   return useQuery({
     queryKey: [BUILDINGS_KEY, serviceId, options],
     queryFn: async () => {
       if (serviceId) {
-        const response = await buildingsApi.getByService(serviceId, options?.status || 'active');
+        const response = await buildingsApi.getByService(serviceId, options?.status ?? 'active');
         return apiListField(response);
       }
       const response = await buildingsApi.getAll(options);
@@ -46,6 +49,26 @@ export const useUpdateBuilding = () => {
   return useMutation({
     mutationFn: ({ id, data }: { id: string; data: Partial<Building> }) => 
       buildingsApi.update(id, data),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: [BUILDINGS_KEY, variables.id] });
+      queryClient.invalidateQueries({ queryKey: [BUILDINGS_KEY] });
+    },
+  });
+};
+
+export const usePatchSyndicInstallationAuth = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      id,
+      body,
+    }: {
+      id: string;
+      body:
+        | { syndicInstallationAuthSignature: string; syndicInstallationAuthSignedAt?: string }
+        | { clear: true };
+    }) => buildingsApi.patchSyndicInstallationAuth(id, body),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: [BUILDINGS_KEY, variables.id] });
       queryClient.invalidateQueries({ queryKey: [BUILDINGS_KEY] });

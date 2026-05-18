@@ -13,6 +13,8 @@ export interface Building {
   numeroNomImmeuble: string;
   utilisationImmeuble: string;
   nbreEtages: string;
+  /** JSON { "0": "n", ... } : appartements par niveau (0 = RDC) */
+  nbreAppartementsParEtage?: string;
   sousSol: string;
   sousSolCommun: string;
   solutionRaccordement: string;
@@ -20,6 +22,8 @@ export interface Building {
   nbrB2C: string;
   totalClients: string;
   cheminFibrePBO1: string;
+  /** Emplacement / réf. BPO1 (saisie libre). */
+  bpo1?: string;
   floorPBO1: string;
   typePBO1: string;
   PBO2: string;
@@ -27,6 +31,10 @@ export interface Building {
   typePBO2: string;
   syndic: string;
   numSyndic: string;
+  /** data:image/png;base64,... */
+  syndicInstallationAuthSignature?: string;
+  /** ISO 8601 */
+  syndicInstallationAuthSignedAt?: string;
   remarques: string;
   typologieHabitat: string;
   verticalite: string;
@@ -94,6 +102,16 @@ export const buildingsApi = {
     return apiClient.put<Building>(`/buildings/${id}`, building);
   },
 
+  /** Dedicated PATCH: signature + date, or `{ clear: true }` to remove (server sets lastModified). */
+  patchSyndicInstallationAuth: async (
+    id: string,
+    body:
+      | { syndicInstallationAuthSignature: string; syndicInstallationAuthSignedAt?: string }
+      | { clear: true },
+  ) => {
+    return apiClient.patch<{ success: boolean; data: Building }>(`/buildings/${id}/syndic-installation-auth`, body);
+  },
+
   // Archive building
   archive: async (id: string) => {
     return apiClient.delete<Building>(`/buildings/${id}`);
@@ -102,5 +120,13 @@ export const buildingsApi = {
   // Bulk update
   bulkUpdate: async (buildings: Building[]) => {
     return apiClient.post<{ modifiedCount: number; upsertedCount: number }>('/buildings/bulk-update', { buildings });
+  },
+
+  /** Manager only — archive every non-archived building in the zone (same zone keys as the Zones screen). */
+  archiveByZone: async (zone: string) => {
+    return apiClient.post<{ success: boolean; matchedCount: number; modifiedCount: number }>(
+      '/buildings/archive-by-zone',
+      { zone },
+    );
   },
 };

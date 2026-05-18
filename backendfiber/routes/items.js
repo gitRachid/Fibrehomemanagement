@@ -112,9 +112,13 @@ router.put('/:id', async (req, res) => {
   }
 });
 
-// Archive/Delete item (soft delete)
+// Archive/Delete item (soft delete) — manager only when authenticated
 router.delete('/:id', async (req, res) => {
   try {
+    if (req.user && req.user.role !== 'manager') {
+      return res.status(403).json({ success: false, message: 'Forbidden' });
+    }
+
     const item = await Item.findOneAndUpdate(
       {
         $or: [
