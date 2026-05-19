@@ -24,6 +24,17 @@ const requireAuth = (req, res, next) => {
   }
 };
 
+const requireManager = (req, res, next) => {
+  if (!req.user || req.user.role !== 'manager') {
+    return res.status(403).json({
+      success: false,
+      message: 'Accès réservé aux gestionnaires',
+    });
+  }
+  return next();
+};
+
 module.exports = {
   requireAuth,
+  requireManager,
 };

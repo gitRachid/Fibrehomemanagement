@@ -11,10 +11,11 @@ import {
   Modal,
   FlatList,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { Redirect, useRouter } from 'expo-router';
 import { useColorScheme } from 'react-native';
 import { useTechnicians, useCreateTechnician, useUpdateTechnician } from '@/hooks';
 import { Technician } from '@/api';
+import { useAuth } from '@/ctx';
 
 type UserRole = 'technician' | 'supervisor' | 'manager';
 
@@ -30,10 +31,11 @@ interface UserFormData {
 
 export default function GestionUtilisateursScreen() {
   const router = useRouter();
+  const { user } = useAuth();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
 
-  const { data: apiTechnicians, isLoading: isLoadingTechs } = useTechnicians();
+  const { data: apiTechnicians, isLoading: isLoadingTechs } = useTechnicians({ status: 'all' });
   const technicians: Technician[] = apiTechnicians || [];
   const createTechnician = useCreateTechnician();
   const updateTechnician = useUpdateTechnician();
@@ -49,6 +51,10 @@ export default function GestionUtilisateursScreen() {
     status: 'active',
     password: '',
   });
+
+  if (user?.role !== 'manager') {
+    return <Redirect href="/(app)/settings" />;
+  }
 
   const resetForm = () => {
     setFormData({

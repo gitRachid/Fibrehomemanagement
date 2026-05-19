@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const Technician = require('../models/Technician');
+const { requireManager } = require('../middleware/auth');
 
 // Get all technicians
 router.get('/', async (req, res) => {
@@ -43,8 +44,8 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// Create technician
-router.post('/', async (req, res) => {
+// Create technician (manager only)
+router.post('/', requireManager, async (req, res) => {
   try {
     const technician = await Technician.create(req.body);
     const technicianResponse = technician.toObject();
@@ -64,8 +65,8 @@ router.post('/', async (req, res) => {
   }
 });
 
-// Update technician
-router.put('/:id', async (req, res) => {
+// Update technician (manager only)
+router.put('/:id', requireManager, async (req, res) => {
   try {
     // Find the technician first
     const technician = await Technician.findOne({
@@ -99,8 +100,8 @@ router.put('/:id', async (req, res) => {
   }
 });
 
-// Delete technician
-router.delete('/:id', async (req, res) => {
+// Delete technician (manager only)
+router.delete('/:id', requireManager, async (req, res) => {
   try {
     const technician = await Technician.findOneAndDelete({
       $or: [

@@ -11,6 +11,8 @@ export const useTechnicians = (options?: { status?: string; role?: string }) => 
       const response = await techniciansApi.getAll(options);
       return apiListField(response);
     },
+    staleTime: 0,
+    refetchOnMount: 'always',
   });
 };
 
@@ -30,14 +32,11 @@ export const useCreateTechnician = () => {
 
   return useMutation({
     mutationFn: (technician: Omit<Technician, '_id'>) => techniciansApi.create(technician),
-    onSuccess: (response) => {
-      const newTechnician = response.data;
-      // Immediately add to cache for instant UI update
-      queryClient.setQueryData([TECHNICIANS_KEY], (old: Technician[] | undefined) => {
-        return old ? [...old, newTechnician] : [newTechnician];
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: [TECHNICIANS_KEY],
+        refetchType: 'all',
       });
-      // Then refetch to ensure consistency with server
-      queryClient.invalidateQueries({ queryKey: [TECHNICIANS_KEY] });
     },
   });
 };
@@ -48,19 +47,12 @@ export const useUpdateTechnician = () => {
   return useMutation({
     mutationFn: ({ id, data }: { id: string; data: Partial<Technician> }) =>
       techniciansApi.update(id, data),
-    onSuccess: (response, variables) => {
-      const updatedTechnician = response.data;
-      // Immediately update cache for instant UI update
-      queryClient.setQueryData([TECHNICIANS_KEY], (old: Technician[] | undefined) => {
-        if (!old) return [updatedTechnician];
-        return old.map((tech) =>
-          tech._id === variables.id || tech.id === variables.id ? updatedTechnician : tech
-        );
+    onSuccess: async (_response, variables) => {
+      await queryClient.invalidateQueries({
+        queryKey: [TECHNICIANS_KEY],
+        refetchType: 'all',
       });
-      // Then refetch to ensure consistency
-      queryClient.invalidateQueries({ queryKey: [TECHNICIANS_KEY] });
-      // Also invalidate specific technician query
-      queryClient.invalidateQueries({ queryKey: [TECHNICIANS_KEY, variables.id] });
+      await queryClient.invalidateQueries({ queryKey: [TECHNICIANS_KEY, variables.id] });
     },
   });
 };

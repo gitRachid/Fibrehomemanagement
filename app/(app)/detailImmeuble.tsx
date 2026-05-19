@@ -2469,7 +2469,7 @@ export default function DetailImmeubleScreen() {
               <Text style={styles.buildingMenuActionText}>Planning rendez-vous</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              onPress={() => {
+              onPress={() => { 
                 setShowBuildingMenu(false);
                 router.push({
                   pathname: '/kmzMap',

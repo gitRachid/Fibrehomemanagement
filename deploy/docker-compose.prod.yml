@@ -1,6 +1,71 @@
 version: "3.9"
 
 services:
+  mongodb:
+    image: mongo:7
+    container_name: fiber-mongodb
+    restart: unless-stopped
+    command: ["--bind_ip_all", "--replSet", "rs0"]
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - fiber-net
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand({ ping: 1 })"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 25s
+
+  mongo-init:
+    image: mongo:7
+    container_name: fiber-mongo-init
+    restart: "no"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    entrypoint:
+      - bash
+      - -c
+      - |
+        mongosh --host mongodb --quiet --eval "
+          try {
+            const s = rs.status();
+            if (s.ok) { print('replica set ok'); quit(0); }
+          } catch (e) {}
+          rs.initiate({_id:'rs0',members:[{_id:0,host:'mongodb:27017'}]});
+          print('replica set initiated');
+        "
+    networks:
+      - fiber-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: fiber-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    networks:
+      - fiber-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: fiber-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    env_file:
+      - ./env/minio.env
+    volumes:
+      - minio_data:/data
+    networks:
+      - fiber-net
+
   api:
     build:
       context: ../backendfiber
@@ -15,13 +80,22 @@ services:
       - REDIS_URL=redis://redis:6379
       - S3_ENDPOINT=http://minio:9000
     depends_on:
-      - redis
-      - minio
-      - mongodb
+      mongo-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
     volumes:
       - ../backendfiber/uploads:/app/uploads
     networks:
       - fiber-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8084/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
 
   worker:
     build:
@@ -37,9 +111,12 @@ services:
       - REDIS_URL=redis://redis:6379
       - S3_ENDPOINT=http://minio:9000
     depends_on:
-      - redis
-      - minio
-      - mongodb
+      mongo-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
     networks:
       - fiber-net
 
@@ -48,47 +125,15 @@ services:
     container_name: fiber-nginx
     restart: unless-stopped
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     ports:
       - "80:80"
+      - "443:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
-    networks:
-      - fiber-net
-
-  mongodb:
-    image: mongo:7
-    container_name: fiber-mongodb
-    restart: unless-stopped
-    command: ["--bind_ip_all", "--replSet", "rs0"]
-    volumes:
-      - mongo_data:/data/db
-    networks:
-      - fiber-net
-
-  redis:
-    image: redis:7-alpine
-    container_name: fiber-redis
-    restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
-    volumes:
-      - redis_data:/data
-    networks:
-      - fiber-net
-
-  minio:
-    image: minio/minio:latest
-    container_name: fiber-minio
-    restart: unless-stopped
-    command: server /data --console-address ":9001"
-    env_file:
-      - ./env/minio.env
-    volumes:
-      - minio_data:/data
-    ports:
-      - "9000:9000"
-      - "9001:9001"
+      - ./nginx/certs:/etc/nginx/certs:ro
     networks:
       - fiber-net
 

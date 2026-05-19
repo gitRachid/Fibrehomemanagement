@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Animated, Easing, Pressable, Text, View } from 'react-native';
-import { Link, Redirect, useRouter } from 'expo-router';
+import { Redirect, useRouter } from 'expo-router';
 import { AppTextInput } from '@/components/app-text-input';
 import { authApi } from '@/api';
 import { API_BASE_URL } from '@/api/client';
@@ -95,7 +95,9 @@ export default function SignInScreen() {
         />
         <Text style={{ color: '#2563eb', fontWeight: '700', fontSize: 12, textTransform: 'uppercase', textAlign: 'center' }}>Suivi technicien terrain</Text>
         <Text style={{ color: '#0f172a', fontWeight: '700', fontSize: 30, textAlign: 'center' }}>Connexion</Text>
-        <Text style={{ color: '#64748b', fontSize: 14 }}>Accédez au suivi opérationnels et aux affectations.</Text>
+        <Text style={{ color: '#64748b', fontSize: 14 }}>
+          Accédez au suivi opérationnel et aux affectations. Les comptes sont créés par un gestionnaire après connexion.
+        </Text>
 
         <AppTextInput
           label="Email"
@@ -130,11 +132,6 @@ export default function SignInScreen() {
         >
           <Text style={{ color: '#0f172a', fontWeight: '700' }}>Tester connexion serveur</Text>
         </Pressable>
-        <Link href="/register" asChild>
-          <Pressable style={{ alignItems: 'center', paddingVertical: 6 }}>
-            <Text style={{ color: '#1d4ed8', fontWeight: '600' }}>Créer un compte</Text>
-          </Pressable>
-        </Link>
       </View>
     </View>
   );

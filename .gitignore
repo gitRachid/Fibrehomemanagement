@@ -33,6 +33,9 @@ yarn-error.*
 # local env files
 .env
 .env*.local
+deploy/env/api.env
+deploy/env/api.dev.env
+deploy/env/minio.env
 
 # typescript
 *.tsbuildinfo
@@ -40,3 +43,10 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# uploads & local artifacts
+backendfiber/uploads/
+backups/
+dossier_technique_*.xlsx
+deploy/env/api.env
+deploy/env/minio.env

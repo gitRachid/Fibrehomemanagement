@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Animated, Dimensions, Modal, PanResponder, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { jwtDecode } from 'jwt-decode';
 import { Screen } from '@/components/screen';
 import { useBuildings, useTechnicians } from '@/hooks';
@@ -82,9 +82,11 @@ export default function SelectionScreen() {
   const screen = Dimensions.get('window');
   const { token } = useAuth();
   const { data: buildings = [], isLoading, isError, refetch } = useBuildings(undefined, { status: 'active' });
-  const { data: allTechnicians = [], isLoading: isLoadingAllTechnicians } = useTechnicians({ status: 'all' });
-  const { data: activeTechnicians = [], isLoading: isLoadingActiveTechnicians } = useTechnicians({ status: 'active' });
-  const { data: inactiveTechnicians = [], isLoading: isLoadingInactiveTechnicians } = useTechnicians({ status: 'inactive' });
+  const {
+    data: apiTechnicians = [],
+    isLoading: isLoadingTechnicians,
+    refetch: refetchTechnicians,
+  } = useTechnicians({ status: 'all' });
   const [customZones, setCustomZones] = useState<string[]>([]);
   const [archivedZones, setArchivedZones] = useState<string[]>([]);
   const [zoneAssignments, setZoneAssignments] = useState<ZoneTechnicianAssignment[]>([]);
@@ -151,16 +153,13 @@ export default function SelectionScreen() {
   const canManageZones = currentUser.role === 'manager';
   canManageZonesRef.current = canManageZones;
 
-  const technicians = useMemo(() => {
-    const byKey = new Map<string, ApiTechnician>();
-    for (const user of [...allTechnicians, ...activeTechnicians, ...inactiveTechnicians]) {
-      const key = getUserPrimaryKey(user);
-      if (key) byKey.set(key, user);
-    }
-    return Array.from(byKey.values());
-  }, [allTechnicians, activeTechnicians, inactiveTechnicians]);
+  const technicians = apiTechnicians;
 
-  const isLoadingTechnicians = isLoadingAllTechnicians || isLoadingActiveTechnicians || isLoadingInactiveTechnicians;
+  useFocusEffect(
+    useCallback(() => {
+      void refetchTechnicians();
+    }, [refetchTechnicians]),
+  );
 
   const assignableUsers = useMemo(
     () => technicians.filter((user: ApiTechnician) => user.role !== 'manager'),
@@ -251,6 +250,7 @@ export default function SelectionScreen() {
       Alert.alert('Accès refusé', 'Seuls les gestionnaires peuvent modifier les affectations de zone.');
       return;
     }
+    void refetchTechnicians();
     setSelectedMenuZone(null);
     setSelectedAssignmentZone(z);
     const existing = zoneAssignments.find((assignment) => assignment.zone === z.zone);
