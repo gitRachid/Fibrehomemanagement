@@ -7,10 +7,10 @@ const assignmentSchema = new mongoose.Schema({
     required: true,
     index: true
   },
+  /** Business technician ids (e.g. TECH-001) — DB technicians may use string _id, not ObjectId. */
   technicianIds: [{
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Technician',
-    required: true
+    type: String,
+    required: true,
   }],
   assignedBy: {
     type: String,

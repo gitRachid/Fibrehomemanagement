@@ -1,13 +1,13 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { View, Text, FlatList, StyleSheet, TouchableOpacity, ActivityIndicator, Modal, ScrollView, Alert, RefreshControl, TextInput, Animated } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useColorScheme } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as XLSX from 'xlsx';
 import { useQueryClient } from '@tanstack/react-query';
 import { GestureHandlerRootView, PanGestureHandler, State } from 'react-native-gesture-handler';
-import { useBuildings, useTechnicians } from '@/hooks';
+import { useBuildings, useTechnicians, normalizeTechnician } from '@/hooks';
 import { dataService } from '@/services/dataService';
 import {
   Building as ApiBuilding,
@@ -58,6 +58,24 @@ interface ItemAssignment {
   assignedAt: Date;
 }
 
+const getBuildingKeys = (b: Pick<Building, 'id' | '_id' | 'idImmeuble'>) =>
+  [b._id, b.id, b.idImmeuble].map((v) => String(v ?? '').trim()).filter(Boolean);
+
+const getBuildingCanonicalId = (b: Pick<Building, 'id' | '_id' | 'idImmeuble'>) =>
+  String(b._id || b.id || b.idImmeuble || '').trim();
+
+const getTechnicianIdentityKeys = (t: ApiTechnician) =>
+  [t.id, t._id, t.email].map((v) => String(v ?? '').trim()).filter(Boolean);
+
+const getTechnicianPrimaryKey = (t: ApiTechnician) =>
+  String(t.id || t._id || t.email || '').trim();
+
+const assignmentMatchesBuilding = (a: ItemAssignment, b: Building) =>
+  getBuildingKeys(b).includes(a.itemId);
+
+const technicianMatchesAssignment = (t: ApiTechnician, technicianIds: string[]) =>
+  getTechnicianIdentityKeys(t).some((key) => technicianIds.includes(key));
+
 /** Normalize API assignment (possibly populated) to local keys (building id, technicien id métier). */
 function mapApiAssignmentToLocal(
   a: Assignment & { itemId?: unknown; technicianIds?: unknown },
@@ -77,14 +95,19 @@ function mapApiAssignmentToLocal(
   );
 
   const rawTechs = Array.isArray(a.technicianIds) ? a.technicianIds : [];
-  const technicianIds = rawTechs.map((t: unknown) => {
-    if (t && typeof t === 'object') {
-      const o = t as { id?: string; _id?: string };
-      if (o.id) return String(o.id);
-      if (o._id) return mongoToTechId.get(String(o._id)) ?? String(o._id);
-    }
-    return String(t);
-  });
+  const technicianIds = [
+    ...new Set(
+      rawTechs.flatMap((t: unknown) => {
+        if (t && typeof t === 'object') {
+          const o = t as { id?: string; _id?: string; email?: string };
+          return [o.id, o._id ? mongoToTechId.get(String(o._id)) ?? String(o._id) : undefined, o.email]
+            .map((v) => String(v ?? '').trim())
+            .filter(Boolean);
+        }
+        return [String(t).trim()].filter(Boolean);
+      }),
+    ),
+  ];
 
   return {
     itemId,
@@ -109,16 +132,28 @@ export default function InfoImmeubleScreen() {
     email: user?.email || '',
   }), [user]);
   const isManager = currentUser.role === 'manager';
-  const { data: apiTechnicians, isLoading: isLoadingTechs } = useTechnicians({ status: 'active' });
-  const technicians: ApiTechnician[] = apiTechnicians || [];
+  const canAssignBuildings = isManager || currentUser.role === 'supervisor';
+  const { data: apiTechnicians, isLoading: isLoadingTechs, refetch: refetchTechnicians } =
+    useTechnicians({ status: 'all' });
+  const technicians: ApiTechnician[] = useMemo(
+    () => (apiTechnicians || []).map(normalizeTechnician).filter((t) => t.role !== 'manager'),
+    [apiTechnicians],
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      void refetchTechnicians();
+    }, [refetchTechnicians]),
+  );
   const [showBuildingMenu, setShowBuildingMenu] = useState(false);
   const [selectedBuildingForAction, setSelectedBuildingForAction] = useState<Building | null>(null);
-  const [selectedTechnicians, setSelectedTechnicians] = useState<string[]>([]);
   const [buildingAssignments, setBuildingAssignments] = useState<ItemAssignment[]>([]);
   const [isArchiveMode, setIsArchiveMode] = useState(false);
   const [selectedBuildingsForArchive, setSelectedBuildingsForArchive] = useState<string[]>([]);
-  const [showTechDropdown, setShowTechDropdown] = useState(false);
-  const [assignmentMode, setAssignmentMode] = useState(false);
+  const [showAssignmentPanel, setShowAssignmentPanel] = useState(false);
+  const [assignmentTechnicianKey, setAssignmentTechnicianKey] = useState<string | null>(null);
+  const [selectedBuildingsForAssignment, setSelectedBuildingsForAssignment] = useState<string[]>([]);
+  const [isSavingAssignment, setIsSavingAssignment] = useState(false);
   const [isOnline, setIsOnline] = useState(true);
   const [syncStatus, setSyncStatus] = useState<'synced' | 'pending' | 'syncing'>('synced');
   const [showImportModal, setShowImportModal] = useState(false);
@@ -207,7 +242,15 @@ export default function InfoImmeubleScreen() {
     const matchesStatus = statusFilter === 'all' || building.status === statusFilter;
     const matchesTechnician =
       technicianFilter === 'all' ||
-      buildingAssignments.some((assignment) => assignment.itemId === building.id && assignment.technicianIds.includes(technicianFilter));
+      buildingAssignments.some(
+        (assignment) =>
+          assignmentMatchesBuilding(assignment, building) &&
+          technicians.some(
+            (tech) =>
+              getTechnicianPrimaryKey(tech) === technicianFilter &&
+              technicianMatchesAssignment(tech, assignment.technicianIds),
+          ),
+      );
     const matchesSearch =
       !query ||
       [
@@ -247,7 +290,7 @@ export default function InfoImmeubleScreen() {
   }, [apiBuildings, selectedZone, locallyImportedBuildings]);
 
   useEffect(() => {
-    if (!isOnline || !technicians.length) return;
+    if (!isOnline) return;
     const listData = dataRef.current;
     if (!listData?.length) return;
     let cancelled = false;
@@ -255,22 +298,27 @@ export default function InfoImmeubleScreen() {
       try {
         const response = await assignmentsApi.getAll({ status: 'active' });
         const rows = apiListField(response as { data?: Assignment[] });
-        const visibleIds = new Set(listData.map((b) => b.id));
         const fromServer: ItemAssignment[] = [];
         for (const row of rows) {
           const m = mapApiAssignmentToLocal(row as Assignment & { itemId?: unknown }, technicians);
-          if (m && visibleIds.has(m.itemId)) fromServer.push(m);
+          if (!m) continue;
+          const building = listData.find((b) => getBuildingKeys(b).includes(m.itemId));
+          if (!building) continue;
+          fromServer.push({ ...m, itemId: getBuildingCanonicalId(building) });
         }
         if (cancelled) return;
         setBuildingAssignments((prev) => {
-          const kept = prev.filter((p) => !visibleIds.has(p.itemId));
+          const kept = prev.filter(
+            (p) => !listData.some((b) => getBuildingKeys(b).includes(p.itemId)),
+          );
           const mergedVisible: ItemAssignment[] = [];
-          for (const bid of visibleIds) {
-            const fromS = fromServer.find((p) => p.itemId === bid);
-            if (fromS) mergedVisible.push(fromS);
+          for (const building of listData) {
+            const canonicalId = getBuildingCanonicalId(building);
+            const fromS = fromServer.find((p) => assignmentMatchesBuilding(p, building));
+            if (fromS) mergedVisible.push({ ...fromS, itemId: canonicalId });
             else {
-              const prevLocal = prev.find((p) => p.itemId === bid);
-              if (prevLocal) mergedVisible.push(prevLocal);
+              const prevLocal = prev.find((p) => assignmentMatchesBuilding(p, building));
+              if (prevLocal) mergedVisible.push({ ...prevLocal, itemId: canonicalId });
             }
           }
           const next = [...kept, ...mergedVisible];
@@ -627,29 +675,28 @@ export default function InfoImmeubleScreen() {
   };
 
   const setupNetworkListener = () => {
-    // Simple and reliable: just use browser's built-in detection
-    const updateStatus = () => {
-      if (typeof navigator !== 'undefined') {
-        setIsOnline(navigator.onLine);
+    setIsOnline(dataService.getNetworkStatus());
+    try {
+      const NetInfo = require('@react-native-community/netinfo').default;
+      const unsubscribe = NetInfo.addEventListener(
+        (state: { isConnected: boolean | null; isInternetReachable: boolean | null }) => {
+          setIsOnline(Boolean(state.isConnected && (state.isInternetReachable ?? true)));
+        },
+      );
+      return () => unsubscribe();
+    } catch {
+      const onOnline = () => setIsOnline(true);
+      const onOffline = () => setIsOnline(false);
+      if (typeof window !== 'undefined' && window.addEventListener) {
+        window.addEventListener('online', onOnline);
+        window.addEventListener('offline', onOffline);
+        return () => {
+          window.removeEventListener('online', onOnline);
+          window.removeEventListener('offline', onOffline);
+        };
       }
-    };
-    
-    // Set initial status
-    updateStatus();
-    
-    // Listen to browser events
-    if (typeof window !== 'undefined' && window.addEventListener) {
-      window.addEventListener('online', () => setIsOnline(true));
-      window.addEventListener('offline', () => setIsOnline(false));
+      return undefined;
     }
-    
-    // Return cleanup
-    return () => {
-      if (typeof window !== 'undefined' && window.removeEventListener) {
-        window.removeEventListener('online', () => setIsOnline(true));
-        window.removeEventListener('offline', () => setIsOnline(false));
-      }
-    };
   };
 
   const handleBack = () => {
@@ -675,7 +722,7 @@ export default function InfoImmeubleScreen() {
   };
 
   const handleBuildingLongPress = (building: Building) => {
-    if (currentUser.role === 'manager') {
+    if (canAssignBuildings) {
       setSelectedBuildingForAction(building);
       setShowBuildingMenu(true);
     }
@@ -738,8 +785,14 @@ export default function InfoImmeubleScreen() {
 
   const startBuildingAssignment = () => {
     setShowBuildingMenu(false);
-    setSelectedTechnicians([]);
-    setAssignmentMode(true);
+    if (selectedBuildingForAction) {
+      const canonicalId = getBuildingCanonicalId(selectedBuildingForAction);
+      setSelectedBuildingsForAssignment((prev) =>
+        prev.includes(canonicalId) ? prev : [...prev, canonicalId],
+      );
+    }
+    setShowAssignmentPanel(true);
+    setFiltersVisible(true);
   };
 
   const startBuildingArchive = () => {
@@ -781,34 +834,112 @@ export default function InfoImmeubleScreen() {
     setIsArchiveMode(false);
   };
 
-  const toggleTechnicianSelection = (technicianId: string) => {
-    setSelectedTechnicians(prev => 
-      prev.includes(technicianId) 
-        ? []
-        : [technicianId]
+  const selectedAssignmentTechnician = useMemo(
+    () =>
+      assignmentTechnicianKey
+        ? technicians.find((t) => getTechnicianIdentityKeys(t).includes(assignmentTechnicianKey))
+        : undefined,
+    [assignmentTechnicianKey, technicians],
+  );
+
+  const toggleBuildingForAssignment = (building: Building) => {
+    const canonicalId = getBuildingCanonicalId(building);
+    setSelectedBuildingsForAssignment((prev) =>
+      prev.includes(canonicalId) ? prev.filter((id) => id !== canonicalId) : [...prev, canonicalId],
     );
   };
 
-  const persistAssignment = async (assignment: ItemAssignment): Promise<boolean> => {
-    setSyncStatus('syncing');
-    const ok = await dataService.createAssignment({
-      ...assignment,
-      status: 'active',
-    } as Omit<Assignment, '_id'>);
-    if (!ok && dataService.getNetworkStatus()) {
-      Alert.alert(
-        'Affectation',
-        'Le serveur n’a pas confirmé l’enregistrement. L’affectation est en file d’attente et sera renvoyée automatiquement.',
-      );
-    }
-    setSyncStatus(dataService.getNetworkStatus() && ok ? 'synced' : 'pending');
-    return ok;
+  const closeAssignmentPanel = () => {
+    setShowAssignmentPanel(false);
+    setAssignmentTechnicianKey(null);
+    setSelectedBuildingsForAssignment([]);
   };
 
-  const cancelAssignmentMode = () => {
-    setAssignmentMode(false);
-    setSelectedTechnicians([]);
-    setSelectedBuildingsForArchive([]);
+  const confirmAssignments = () => {
+    const tech = selectedAssignmentTechnician;
+    if (!tech) {
+      Alert.alert('Affectation', 'Choisissez un technicien dans l’en-tête de la liste.');
+      return;
+    }
+    if (selectedBuildingsForAssignment.length === 0) {
+      Alert.alert('Affectation', 'Sélectionnez au moins un immeuble dans la liste.');
+      return;
+    }
+
+    const buildingsToAssign =
+      data?.filter((b) => selectedBuildingsForAssignment.includes(getBuildingCanonicalId(b))) ?? [];
+
+    Alert.alert(
+      'Confirmer l’affectation',
+      `Affecter ${buildingsToAssign.length} immeuble(s) à ${tech.name} ?`,
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Confirmer',
+          onPress: () => void applyBulkAssignments(buildingsToAssign, tech),
+        },
+      ],
+    );
+  };
+
+  const applyBulkAssignments = async (buildings: Building[], tech: ApiTechnician) => {
+    if (isSavingAssignment || buildings.length === 0) return;
+    setIsSavingAssignment(true);
+    setSyncStatus('syncing');
+
+    const techKeys = getTechnicianIdentityKeys(tech);
+    const payloads = buildings.map((building) => ({
+      itemId: getBuildingCanonicalId(building),
+      technicianIds: techKeys,
+      assignedBy: currentUser.id,
+      assignedAt: new Date(),
+      status: 'active' as const,
+    }));
+
+    let updatedAssignments = [...buildingAssignments];
+    for (const building of buildings) {
+      const itemId = getBuildingCanonicalId(building);
+      updatedAssignments = [
+        ...updatedAssignments.filter((a) => !assignmentMatchesBuilding(a, building)),
+        {
+          itemId,
+          technicianIds: techKeys,
+          assignedBy: currentUser.id,
+          assignedAt: new Date(),
+        },
+      ];
+    }
+    setBuildingAssignments(updatedAssignments);
+    await saveAssignmentsToLocal(updatedAssignments);
+
+    let successCount = 0;
+    if (dataService.getNetworkStatus()) {
+      try {
+        await assignmentsApi.bulkCreate(payloads);
+        successCount = buildings.length;
+        setSyncStatus('synced');
+      } catch {
+        for (const payload of payloads) {
+          const result = await dataService.createAssignment(payload);
+          if (result.ok) successCount += 1;
+        }
+        setSyncStatus(successCount === buildings.length ? 'synced' : 'pending');
+      }
+    } else {
+      for (const payload of payloads) {
+        await dataService.createAssignment(payload);
+        successCount += 1;
+      }
+      setSyncStatus('pending');
+    }
+
+    setIsSavingAssignment(false);
+    closeAssignmentPanel();
+    Alert.alert(
+      'Affectation',
+      `${successCount}/${buildings.length} immeuble(s) affecté(s) à ${tech.name}.`,
+    );
+    void assignmentsApi.getAll({ status: 'active' }).catch(() => undefined);
   };
 
   // Add sync status indicator
@@ -834,132 +965,127 @@ export default function InfoImmeubleScreen() {
     }
   };
 
-  const renderHeader = () => {
-    if (!assignmentMode || currentUser.role !== 'manager') return null;
-    
+  const renderAssignmentListHeader = () => {
+    if (!canAssignBuildings || isArchiveMode || !showAssignmentPanel) return null;
+
     return (
-      <View style={[styles.fixedAssignmentHeader, { backgroundColor: '#007AFF' }]}>
-        <View style={styles.techDropdownContainer}>
-          <TouchableOpacity 
-            style={[styles.techDropdownButton, { backgroundColor: 'rgba(255, 255, 255, 0.2)' }]}
-            onPress={() => setShowTechDropdown(!showTechDropdown)}
+      <View
+        style={[
+          styles.assignListHeader,
+          {
+            backgroundColor: isDark ? '#1e3a5f' : '#eff6ff',
+            borderColor: isDark ? '#2563eb' : '#93c5fd',
+          },
+        ]}
+      >
+        <View style={styles.assignListHeaderTop}>
+          <Text style={[styles.assignListHeaderTitle, { color: isDark ? '#fff' : '#1e3a8a' }]}>
+            Affectation
+          </Text>
+          <TouchableOpacity
+              onPress={closeAssignmentPanel}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              accessibilityLabel="Quitter le mode affectation"
+              style={[styles.assignCloseBtn, { backgroundColor: isDark ? '#334155' : '#dbeafe' }]}
+            >
+              <Text style={[styles.assignCloseBtnText, { color: isDark ? '#fff' : '#1e3a8a' }]}>✕</Text>
+            </TouchableOpacity>
+        </View>
+        {isLoadingTechs ? (
+          <ActivityIndicator size="small" color="#2563eb" style={{ marginVertical: 8 }} />
+        ) : technicians.length === 0 ? (
+          <Text style={[styles.assignListHeaderHint, { color: isDark ? '#94a3b8' : '#64748b' }]}>
+            Aucun technicien disponible
+          </Text>
+        ) : (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.assignTechScroll}
+            keyboardShouldPersistTaps="handled"
           >
-            <Text style={styles.techDropdownText}>
-              {selectedTechnicians.length > 0 
-                ? `${technicians.find(t => t.id === selectedTechnicians[0])?.name}`
-                : 'Sélectionner un technicien'
-              }
-            </Text>
-            <Text style={styles.dropdownArrow}>{showTechDropdown ? '▲' : '▼'}</Text>
-          </TouchableOpacity>
-          
-          {showTechDropdown && (
-            <View style={[styles.fixedTechDropdownList, { backgroundColor: isDark ? '#1a1a1a' : '#fff' }]}>
-              <ScrollView 
-                style={styles.techListScroll} 
-                showsVerticalScrollIndicator={true}
-                nestedScrollEnabled={true}
-              >
-                {technicians.map((technician: ApiTechnician) => (
-                  <TouchableOpacity
-                    key={technician.id}
+            {technicians.map((tech) => {
+              const techKey = getTechnicianPrimaryKey(tech);
+              const isActive = assignmentTechnicianKey === techKey;
+              return (
+                <TouchableOpacity
+                  key={techKey || tech.email}
+                  onPress={() => {
+                    setShowAssignmentPanel(true);
+                    setAssignmentTechnicianKey(isActive ? null : techKey);
+                    if (isActive) setSelectedBuildingsForAssignment([]);
+                  }}
+                  style={[
+                    styles.assignTechChip,
+                    {
+                      backgroundColor: isActive ? '#2563eb' : isDark ? '#334155' : '#fff',
+                      borderColor: isActive ? '#2563eb' : isDark ? '#475569' : '#cbd5e1',
+                    },
+                  ]}
+                >
+                  <Text
                     style={[
-                      styles.techDropdownItem,
-                      { 
-                        backgroundColor: selectedTechnicians.includes(technician.id) 
-                          ? '#007AFF20' 
-                          : 'transparent',
-                        borderColor: isDark ? '#444' : '#e0e0e0'
-                      }
+                      styles.assignTechChipText,
+                      { color: isActive ? '#fff' : isDark ? '#e2e8f0' : '#334155' },
                     ]}
-                    onPress={() => {
-                      if (selectedTechnicians.includes(technician.id)) {
-                        setSelectedTechnicians([]);
-                      } else {
-                        setSelectedTechnicians([technician.id]);
-                        setShowTechDropdown(false);
-                      }
-                    }}
                   >
-                    <View style={styles.techItemContent}>
-                      <Text style={[styles.techItemName, { color: isDark ? '#fff' : '#000' }]}>
-                        {technician.name}
-                      </Text>
-                      <Text style={[styles.techItemEmail, { color: isDark ? '#aaa' : '#666' }]}>
-                        {technician.email}
-                      </Text>
-                    </View>
-                    <View style={[
-                      styles.techCheckbox,
-                      { 
-                        backgroundColor: selectedTechnicians.includes(technician.id) 
-                          ? '#007AFF' 
-                          : 'transparent',
-                        borderColor: selectedTechnicians.includes(technician.id) 
-                          ? '#007AFF' 
-                          : (isDark ? '#666' : '#ccc')
-                      }
-                    ]}>
-                      {selectedTechnicians.includes(technician.id) && (
-                        <Text style={styles.techCheckmark}>✓</Text>
-                      )}
-                    </View>
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
-            </View>
-          )}
-        </View>
-        
-        <View style={styles.assignmentActions}>
-          <TouchableOpacity 
-            style={[styles.assignmentButton, styles.cancelAssignmentButton]} 
-            onPress={cancelAssignmentMode}
-          >
-            <Text style={styles.cancelAssignmentText}>Terminer</Text>
-          </TouchableOpacity>
-        </View>
+                    {tech.name}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+        )}
+
+        {assignmentTechnicianKey ? (
+          <>
+            <Text style={[styles.assignListHeaderHint, { color: isDark ? '#bfdbfe' : '#1d4ed8' }]}>
+              Touchez les immeubles à affecter à{' '}
+              <Text style={{ fontWeight: '700' }}>{selectedAssignmentTechnician?.name}</Text>
+              {' '}({selectedBuildingsForAssignment.length} sélectionné
+              {selectedBuildingsForAssignment.length > 1 ? 's' : ''})
+            </Text>
+            <TouchableOpacity
+              style={[
+                styles.assignHeaderBtnConfirm,
+                styles.assignConfirmSingleBtn,
+                {
+                  opacity:
+                    selectedBuildingsForAssignment.length > 0 && !isSavingAssignment ? 1 : 0.5,
+                },
+              ]}
+              onPress={confirmAssignments}
+              disabled={selectedBuildingsForAssignment.length === 0 || isSavingAssignment}
+            >
+              {isSavingAssignment ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Text style={styles.assignHeaderBtnConfirmText}>
+                  Confirmer ({selectedBuildingsForAssignment.length})
+                </Text>
+              )}
+            </TouchableOpacity>
+          </>
+        ) : (
+          <Text style={[styles.assignListHeaderHint, { color: isDark ? '#94a3b8' : '#64748b' }]}>
+            Choisissez un technicien, puis sélectionnez les immeubles et confirmez
+          </Text>
+        )}
       </View>
     );
   };
 
-  const getAssignedTechnicians = (buildingId: string): ApiTechnician[] => {
-    const assignment = buildingAssignments.find(a => a.itemId === buildingId);
+  const getAssignedTechnicians = (building: Building): ApiTechnician[] => {
+    const assignment = buildingAssignments.find((a) => assignmentMatchesBuilding(a, building));
     if (!assignment) return [];
-    return technicians.filter(tech => assignment.technicianIds.includes(tech.id));
+    return technicians.filter((tech) => technicianMatchesAssignment(tech, assignment.technicianIds));
   };
 
   const handleBuildingPress = async (building: Building) => {
     if (isArchiveMode) {
-      toggleArchiveSelection(building.id); 
-    } else if (assignmentMode && selectedTechnicians.length === 1) {
-      // Immediate assignment save
-      const newAssignment: ItemAssignment = {
-        itemId: building.id,
-        technicianIds: selectedTechnicians,
-        assignedBy: currentUser.id,
-        assignedAt: new Date()
-      };
-
-      const updatedAssignments = (() => {
-        const filtered = buildingAssignments.filter(a => a.itemId !== building.id);
-        return [...filtered, newAssignment];
-      })();
-
-      setBuildingAssignments(updatedAssignments);
-      await saveAssignmentsToLocal(updatedAssignments);
-
-      try {
-        const ok = await persistAssignment(newAssignment);
-        if (!ok) {
-          setSyncStatus('pending');
-        }
-      } catch {
-        setSyncStatus('pending');
-        Alert.alert('Affectation', 'Affectation sauvegardée localement. Elle sera synchronisée dès que possible.');
-      }
-
-      // Silent assignment - no success alert
+      toggleArchiveSelection(building.id);
+    } else if (showAssignmentPanel && assignmentTechnicianKey) {
+      toggleBuildingForAssignment(building);
     } else if (canAccessBuilding(building)) {
       router.push({
         pathname: '/(app)/detailImmeuble',
@@ -975,8 +1101,9 @@ export default function InfoImmeubleScreen() {
   };
 
   const renderBuilding = ({ item }: { item: Building }) => {
-    const assignedTechs = getAssignedTechnicians(item.id);
+    const assignedTechs = getAssignedTechnicians(item);
     const isSelectedForArchive = selectedBuildingsForArchive.includes(item.id);
+    const isSelectedForAssignment = selectedBuildingsForAssignment.includes(getBuildingCanonicalId(item));
     const statusLabels: Record<string, string> = {
       active: 'Actif',
       pending: 'En attente',
@@ -998,38 +1125,46 @@ export default function InfoImmeubleScreen() {
         style={[
           styles.buildingItem, 
           { 
-            backgroundColor: isSelectedForArchive 
+            backgroundColor: isSelectedForArchive || isSelectedForAssignment
               ? '#007AFF20' 
               : (isDark ? '#333' : '#f9f9f9'),
-            opacity: canAccessBuilding(item) ? 1 : 0.5,
-            borderWidth: isSelectedForArchive ? 2 : 0,
-            borderColor: isSelectedForArchive ? '#007AFF' : 'transparent'
+            opacity: (showAssignmentPanel && assignmentTechnicianKey) || canAccessBuilding(item) ? 1 : 0.5,
+            borderWidth: isSelectedForArchive || isSelectedForAssignment ? 2 : 0,
+            borderColor: isSelectedForArchive || isSelectedForAssignment ? '#007AFF' : 'transparent',
           }
         ]}
         onPress={() => handleBuildingPress(item)}
-        onLongPress={() => !isArchiveMode && !assignmentMode && handleBuildingLongPress(item)}
+        onLongPress={() => !isArchiveMode && !assignmentTechnicianKey && handleBuildingLongPress(item)}
         delayLongPress={500}
       >
         <View style={styles.buildingContent}>
           <View style={styles.buildingHeader}>
             {/* Archive checkbox */}
-            {isArchiveMode && currentUser.role === 'manager' && (
-              <View style={[
-                styles.archiveCheckbox,
-                { 
-                  backgroundColor: isSelectedForArchive 
-                    ? '#007AFF' 
-                    : 'transparent',
-                  borderColor: isSelectedForArchive 
-                    ? '#007AFF' 
-                    : (isDark ? '#666' : '#ccc')
-                }
-              ]}>
-                {isSelectedForArchive && (
-                  <Text style={styles.archiveCheckmark}>✓</Text>
-                )}
+            {isArchiveMode && isManager ? (
+              <View
+                style={[
+                  styles.archiveCheckbox,
+                  {
+                    backgroundColor: isSelectedForArchive ? '#007AFF' : 'transparent',
+                    borderColor: isSelectedForArchive ? '#007AFF' : isDark ? '#666' : '#ccc',
+                  },
+                ]}
+              >
+                {isSelectedForArchive ? <Text style={styles.archiveCheckmark}>✓</Text> : null}
               </View>
-            )}
+            ) : showAssignmentPanel && assignmentTechnicianKey ? (
+              <View
+                style={[
+                  styles.archiveCheckbox,
+                  {
+                    backgroundColor: isSelectedForAssignment ? '#007AFF' : 'transparent',
+                    borderColor: isSelectedForAssignment ? '#007AFF' : isDark ? '#666' : '#ccc',
+                  },
+                ]}
+              >
+                {isSelectedForAssignment ? <Text style={styles.archiveCheckmark}>✓</Text> : null}
+              </View>
+            ) : null}
             
             <View style={styles.buildingTitleContainer}>
               <Text
@@ -1040,7 +1175,7 @@ export default function InfoImmeubleScreen() {
                 {item.name}
               </Text>
             </View>
-            {currentUser.role === 'manager' && !isArchiveMode && !assignmentMode ? (
+            {canAssignBuildings && !isArchiveMode && !(showAssignmentPanel && assignmentTechnicianKey) ? (
               <TouchableOpacity
                 onPress={(event) => {
                   event.stopPropagation?.();
@@ -1112,7 +1247,7 @@ export default function InfoImmeubleScreen() {
       </Animated.View>
       
       {/* Archive Mode Header */}
-      {isArchiveMode && currentUser.role === 'manager' && (
+      {isArchiveMode && isManager && (
         <View style={[styles.archiveModeHeader, { backgroundColor: '#007AFF' }]}>
           <Text style={styles.archiveModeText}>
             Mode Archive - Sélectionnez les immeubles à archiver ({selectedBuildingsForArchive.length})
@@ -1166,6 +1301,7 @@ export default function InfoImmeubleScreen() {
               </Text>
           </Animated.View>
           <Animated.View style={[styles.zoneControlsContainer, { transform: [{ translateY: topControlsOffset }], marginBottom: topControlsOffset }]}>
+            {renderAssignmentListHeader()}
             <View style={styles.searchRow}>
               <TouchableOpacity
                 onPress={() => setFiltersVisible((v) => !v)}
@@ -1225,15 +1361,18 @@ export default function InfoImmeubleScreen() {
                   >
                     <Text style={[styles.filterChipText, technicianFilter === 'all' && styles.filterChipTextActive]}>Tous techniciens</Text>
                   </TouchableOpacity>
-                  {technicians.map((tech) => (
+                  {technicians.map((tech) => {
+                    const techKey = getTechnicianPrimaryKey(tech);
+                    return (
                     <TouchableOpacity
-                      key={tech.id}
-                      onPress={() => setTechnicianFilter(tech.id)}
-                      style={[styles.filterChip, technicianFilter === tech.id && styles.filterChipActive]}
+                      key={techKey || tech.email}
+                      onPress={() => setTechnicianFilter(techKey)}
+                      style={[styles.filterChip, technicianFilter === techKey && styles.filterChipActive]}
                     >
-                      <Text style={[styles.filterChipText, technicianFilter === tech.id && styles.filterChipTextActive]}>{tech.name}</Text>
+                      <Text style={[styles.filterChipText, technicianFilter === techKey && styles.filterChipTextActive]}>{tech.name}</Text>
                     </TouchableOpacity>
-                  ))}
+                    );
+                  })}
                 </ScrollView>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filtersScroll}>
                   {[
@@ -1255,7 +1394,6 @@ export default function InfoImmeubleScreen() {
               </>
             ) : null}
           </Animated.View>
-          {renderHeader()}
           <FlatList
             data={filteredData}
             renderItem={renderBuilding}
@@ -1580,20 +1718,89 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
-  // Assignment mode styles
-  fixedAssignmentHeader: {
-    padding: 15,
-    marginHorizontal: 10,
-    marginTop: 10,
-    marginBottom: 5,
-    borderRadius: 10,
+  assignListHeader: {
+    marginBottom: 12,
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  assignListHeaderTop: {
+    flexDirection: 'row',
     alignItems: 'center',
-    position: 'absolute',
-    top: -10,
-    left: 0,
-    right: 0,
-    zIndex: 100,
-    backgroundColor: '#007AFF',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  assignListHeaderTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    flex: 1,
+  },
+  assignCloseBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  assignCloseBtnText: {
+    fontSize: 18,
+    fontWeight: '700',
+    lineHeight: 20,
+  },
+  assignListHeaderHint: {
+    fontSize: 13,
+    marginTop: 8,
+    lineHeight: 18,
+  },
+  assignTechScroll: {
+    marginBottom: 4,
+  },
+  assignTechChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+    marginRight: 8,
+  },
+  assignTechChipText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  assignConfirmRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 10,
+  },
+  assignHeaderBtn: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 42,
+  },
+  assignHeaderBtnCancel: {
+    backgroundColor: 'rgba(100, 116, 139, 0.2)',
+  },
+  assignHeaderBtnCancelText: {
+    color: '#475569',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  assignHeaderBtnConfirm: {
+    backgroundColor: '#2563eb',
+  },
+  assignConfirmSingleBtn: {
+    marginTop: 10,
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+    width: '100%',
+  },
+  assignHeaderBtnConfirmText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
   },
   assignmentHeader: {
     padding: 15,

@@ -23,6 +23,9 @@ export default function SettingsScreen() {
         subtitleStyle={{ textAlign: 'center' }}>
       <View style={{ borderRadius: 14, borderWidth: 1, borderColor: '#e2e8f0', backgroundColor: '#fff', padding: 14, gap: 8 }}>
         <Text style={{ color: '#0f172a', fontWeight: '600' }}>Session</Text>
+        <Text style={{ color: '#64748b', fontSize: 13 }}>
+          Rôle : {user?.role ?? '—'} {user?.email ? `(${user.email})` : ''}
+        </Text>
         <Text style={{ color: '#64748b', fontSize: 13 }}>Token loaded: {token ? 'Yes' : 'No'}</Text>
         <Text style={{ color: isOnline ? '#16a34a' : '#dc2626', fontSize: 13 }}>Connectivity: {isOnline ? 'Online' : 'Offline'}</Text>
         <Text style={{ color: '#64748b', fontSize: 13 }}>Pending operations: {pendingCount}</Text>

@@ -153,18 +153,23 @@ export default function SelectionScreen() {
   const canManageZones = currentUser.role === 'manager';
   canManageZonesRef.current = canManageZones;
 
-  const technicians = apiTechnicians;
-
   useFocusEffect(
     useCallback(() => {
       void refetchTechnicians();
     }, [refetchTechnicians]),
   );
 
-  const assignableUsers = useMemo(
-    () => technicians.filter((user: ApiTechnician) => user.role !== 'manager'),
-    [technicians],
-  );
+  const assignableUsers = useMemo(() => {
+    const byKey = new Map<string, ApiTechnician>();
+    for (const user of apiTechnicians) {
+      if (user.role === 'manager') continue;
+      const key = getUserPrimaryKey(user);
+      if (key) byKey.set(key, user);
+    }
+    return Array.from(byKey.values()).sort((a, b) =>
+      String(a.name || '').localeCompare(String(b.name || ''), 'fr'),
+    );
+  }, [apiTechnicians]);
 
   const getAssignedUsersForZone = (zoneKey: string) => {
     const assignment = zoneAssignments.find((item) => item.zone === zoneKey);
@@ -245,19 +250,25 @@ export default function SelectionScreen() {
     });
   };
 
-  const openZoneAssignment = (z: ZoneRow) => {
+  const openZoneAssignment = async (z: ZoneRow) => {
     if (!canManageZones) {
       Alert.alert('Accès refusé', 'Seuls les gestionnaires peuvent modifier les affectations de zone.');
       return;
     }
-    void refetchTechnicians();
     setSelectedMenuZone(null);
-    setSelectedAssignmentZone(z);
+    const { data: freshTechnicians } = await refetchTechnicians();
+    const users = (freshTechnicians ?? apiTechnicians).filter(
+      (user: ApiTechnician) => user.role !== 'manager',
+    );
     const existing = zoneAssignments.find((assignment) => assignment.zone === z.zone);
+    setSelectedAssignmentZone(z);
     setSelectedUserIds(
-      assignableUsers
-        .filter((user) => getUserIdentityKeys(user).some((key) => existing?.technicianIds.includes(key)))
-        .map(getUserPrimaryKey),
+      users
+        .filter((user) =>
+          getUserIdentityKeys(user).some((key) => existing?.technicianIds.includes(key)),
+        )
+        .map(getUserPrimaryKey)
+        .filter(Boolean),
     );
   };
 
@@ -815,73 +826,79 @@ export default function SelectionScreen() {
               <Text style={{ color: '#b91c1c', fontWeight: '600' }}>Aucun technicien ou superviseur trouvé.</Text>
             ) : (
               <>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                <Text style={{ color: '#64748b', fontSize: 13 }}>
+                  {assignableUsers.length} utilisateur{assignableUsers.length > 1 ? 's' : ''} disponible
+                  {assignableUsers.length > 1 ? 's' : ''}
+                  {' — faites défiler la liste'}
+                </Text>
+                <View style={{ flexDirection: 'row', gap: 8 }}>
                   <Pressable
                     onPress={() => setSelectedUserIds(assignableUsers.map(getUserPrimaryKey).filter(Boolean))}
                     style={{
-                      borderRadius: 999,
-                      borderWidth: 1,
-                      borderColor: '#2563eb',
+                      flex: 1,
+                      borderRadius: 10,
                       backgroundColor: '#2563eb',
-                      paddingHorizontal: 12,
-                      paddingVertical: 8,
-                      marginRight: 8,
+                      paddingVertical: 10,
+                      alignItems: 'center',
                     }}
                   >
-                    <Text style={{ color: '#fff', fontSize: 12, fontWeight: '700' }}>Tous</Text>
+                    <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>Tout sélectionner</Text>
                   </Pressable>
                   <Pressable
                     onPress={() => setSelectedUserIds([])}
                     style={{
-                      borderRadius: 999,
+                      flex: 1,
+                      borderRadius: 10,
                       borderWidth: 1,
                       borderColor: '#cbd5e1',
-                      backgroundColor: '#fff',
-                      paddingHorizontal: 12,
-                      paddingVertical: 8,
-                      marginRight: 8,
+                      paddingVertical: 10,
+                      alignItems: 'center',
                     }}
                   >
-                    <Text style={{ color: '#334155', fontSize: 12, fontWeight: '700' }}>Effacer</Text>
+                    <Text style={{ color: '#334155', fontSize: 13, fontWeight: '700' }}>Tout effacer</Text>
                   </Pressable>
-                  {assignableUsers.map((user: ApiTechnician) => {
-                    const userId = getUserPrimaryKey(user);
-                    const isSelected = selectedUserIds.includes(userId);
-                    return (
-                      <Pressable
-                        key={userId}
-                        onPress={() => {
-                          setSelectedUserIds((current) =>
-                            current.includes(userId)
-                              ? current.filter((id) => id !== userId)
-                              : [...current, userId],
-                          );
-                        }}
-                        style={{
-                          borderRadius: 999,
-                          borderWidth: 1,
-                          borderColor: isSelected ? '#2563eb' : '#cbd5e1',
-                          backgroundColor: isSelected ? '#2563eb' : '#fff',
-                          paddingHorizontal: 12,
-                          paddingVertical: 8,
-                          marginRight: 8,
-                        }}
-                      >
-                        <Text
+                </View>
+                <ScrollView style={{ maxHeight: 280 }} nestedScrollEnabled>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                    {assignableUsers.map((user: ApiTechnician) => {
+                      const userId = getUserPrimaryKey(user);
+                      const isSelected = selectedUserIds.includes(userId);
+                      return (
+                        <Pressable
+                          key={`${userId}-${user.email}`}
+                          onPress={() => {
+                            setSelectedUserIds((current) =>
+                              current.includes(userId)
+                                ? current.filter((id) => id !== userId)
+                                : [...current, userId],
+                            );
+                          }}
                           style={{
-                            color: isSelected ? '#fff' : '#334155',
-                            fontSize: 12,
-                            fontWeight: '700',
+                            borderRadius: 999,
+                            borderWidth: 1,
+                            borderColor: isSelected ? '#2563eb' : '#cbd5e1',
+                            backgroundColor: isSelected ? '#2563eb' : '#fff',
+                            paddingHorizontal: 14,
+                            paddingVertical: 10,
                           }}
                         >
-                          {isSelected ? '✓ ' : ''}{user.name}
-                        </Text>
-                      </Pressable>
-                    );
-                  })}
+                          <Text
+                            style={{
+                              color: isSelected ? '#fff' : '#334155',
+                              fontSize: 13,
+                              fontWeight: '700',
+                            }}
+                          >
+                            {isSelected ? '✓ ' : ''}{user.name}
+                            {user.role === 'supervisor' ? ' (sup.)' : ''}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
                 </ScrollView>
                 <Text style={{ color: '#64748b', fontSize: 12 }}>
-                  {selectedUserIds.length} utilisateur{selectedUserIds.length > 1 ? 's' : ''} sélectionné{selectedUserIds.length > 1 ? 's' : ''}
+                  {selectedUserIds.length} sélectionné{selectedUserIds.length > 1 ? 's' : ''} sur {assignableUsers.length}
                 </Text>
               </>
             )}

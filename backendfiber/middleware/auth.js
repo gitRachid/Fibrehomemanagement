@@ -25,7 +25,9 @@ const requireAuth = (req, res, next) => {
 };
 
 const requireManager = (req, res, next) => {
-  if (!req.user || req.user.role !== 'manager') {
+  const isManager =
+    req.user && (req.user.role === 'manager' || req.user.sub === 'admin');
+  if (!isManager) {
     return res.status(403).json({
       success: false,
       message: 'Accès réservé aux gestionnaires',

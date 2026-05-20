@@ -133,11 +133,29 @@ Internet → VM:80/443 (nginx) → api:8084
 
 ## Dépannage
 
+### 502 Bad Gateway
+
+```bash
+docker logs fiber-api --tail 80
+docker logs fiber-mongo-init
+docker ps -a | grep fiber
+```
+
+Souvent : `Database connection failed` → MongoDB / replica set.
+
+```bash
+# Vérifier api.env : MONGODB_URI=mongodb://mongodb:27017/fiberhomemanage?replicaSet=rs0
+docker exec fiber-mongodb mongosh --eval "rs.initiate({_id:'rs0',members:[{_id:0,host:'mongodb:27017'}]})"
+docker compose -f docker-compose.prod.yml restart api
+sleep 5
+curl http://localhost/api/health
+```
+
 | Problème | Action |
 |----------|--------|
 | `curl /health` échoue | `docker logs fiber-nginx` et `docker logs fiber-api` |
 | MongoDB | `docker logs fiber-mongo-init` puis `docker logs fiber-mongodb` |
 | CORS app | Vérifier `CORS_ORIGIN` dans `env/api.env` |
-| 502 nginx | Attendre que l’API soit healthy : `docker inspect fiber-api --format '{{.State.Health.Status}}'` |
+| `git pull` déjà à jour | Faire `git push` sur le PC puis `git pull` sur la VM |
 
 Voir aussi : `DEPLOY_VM.md`, `DOCKER.md`, `BOOTSTRAP_VM_STEP_BY_STEP.md` (Ubuntu 18.04).

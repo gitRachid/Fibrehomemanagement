@@ -28,24 +28,41 @@ router.post('/login', async (req, res) => {
     }
 
     const normalizedEmail = String(email).toLowerCase().trim();
+    const adminEmail = DEFAULT_ADMIN_EMAIL.toLowerCase();
 
-    // Check MongoDB users first. This lets a real technician account use the same
-    // email as ADMIN_EMAIL without being forced into the default manager role.
+    // Compte gestionnaire .env (ADMIN_EMAIL / ADMIN_PASSWORD) — prioritaire
+    if (normalizedEmail === adminEmail) {
+      const isValidAdminPassword = await bcrypt.compare(String(password), DEFAULT_PASSWORD_HASH);
+      if (isValidAdminPassword) {
+        const token = jwt.sign(
+          { sub: 'admin', email: normalizedEmail, role: 'manager' },
+          JWT_SECRET,
+          { expiresIn: JWT_EXPIRES_IN }
+        );
+        return res.json({
+          success: true,
+          data: {
+            token,
+            user: { id: 'admin', name: 'Administrateur', email: normalizedEmail, role: 'manager' },
+          },
+        });
+      }
+    }
+
     const technician = await Technician.findOne({
       email: normalizedEmail,
-      status: 'active'
+      status: 'active',
     });
 
     if (technician) {
       if (!technician.password) {
-        return res.status(401).json({ 
-          success: false, 
-          message: 'Account has no password set. Please contact administrator.' 
+        return res.status(401).json({
+          success: false,
+          message: 'Account has no password set. Please contact administrator.',
         });
       }
       const isValidPassword = await bcrypt.compare(String(password), technician.password);
       if (isValidPassword) {
-        // Update last login
         technician.lastLogin = new Date();
         await technician.save();
 
@@ -64,25 +81,6 @@ router.post('/login', async (req, res) => {
               email: technician.email,
               role: technician.role,
             },
-          },
-        });
-      }
-    }
-
-    // Fallback: default admin from environment.
-    if (normalizedEmail === DEFAULT_ADMIN_EMAIL.toLowerCase()) {
-      const isValidPassword = await bcrypt.compare(String(password), DEFAULT_PASSWORD_HASH);
-      if (isValidPassword) {
-        const token = jwt.sign(
-          { sub: 'admin', email: normalizedEmail, role: 'manager' },
-          JWT_SECRET,
-          { expiresIn: JWT_EXPIRES_IN }
-        );
-        return res.json({
-          success: true,
-          data: {
-            token,
-            user: { id: 'admin', email: normalizedEmail, role: 'manager' },
           },
         });
       }

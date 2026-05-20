@@ -3,7 +3,7 @@
  * Use `syncApi` only for explicit legacy `/sync` tooling, not mixed with this queue.
  */
 import { Assignment, assignmentsApi, Building, buildingsApi, Technician, techniciansApi } from '@/api';
-import { apiListField } from '@/api/client';
+import { ApiError, apiListField } from '@/api/client';
 import { QueueManager } from './queueManager';
 import { SyncService } from './syncService';
 
@@ -267,19 +267,23 @@ class DataService {
     }
   }
 
-  async createAssignment(assignment: Omit<Assignment, '_id'>): Promise<boolean> {
+  async createAssignment(
+    assignment: Omit<Assignment, '_id'>,
+  ): Promise<{ ok: boolean; error?: string }> {
     await this.ensureReady();
     if (this.isOnline) {
       try {
         await assignmentsApi.create(assignment);
-        return true;
-      } catch {
+        return { ok: true };
+      } catch (error) {
+        const message =
+          error instanceof ApiError ? error.message : 'Erreur lors de l’affectation';
         await this.queueChange({
           entity: 'assignment',
           action: 'create',
           payload: assignment,
         });
-        return false;
+        return { ok: false, error: message };
       }
     }
 
@@ -288,7 +292,7 @@ class DataService {
       action: 'create',
       payload: assignment,
     });
-    return true;
+    return { ok: true };
   }
 
   async syncData(): Promise<{ success: boolean; message: string }> {

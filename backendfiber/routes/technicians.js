@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const Technician = require('../models/Technician');
-const { requireManager } = require('../middleware/auth');
+const { requireAuth, requireManager } = require('../middleware/auth');
 
 // Get all technicians
 router.get('/', async (req, res) => {
@@ -44,8 +44,8 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// Create technician (manager only)
-router.post('/', requireManager, async (req, res) => {
+// Create technician (manager only — requireAuth ici aussi pour le mode dev sans API_REQUIRE_AUTH)
+router.post('/', requireAuth, requireManager, async (req, res) => {
   try {
     const technician = await Technician.create(req.body);
     const technicianResponse = technician.toObject();
@@ -66,7 +66,7 @@ router.post('/', requireManager, async (req, res) => {
 });
 
 // Update technician (manager only)
-router.put('/:id', requireManager, async (req, res) => {
+router.put('/:id', requireAuth, requireManager, async (req, res) => {
   try {
     // Find the technician first
     const technician = await Technician.findOne({
@@ -101,7 +101,7 @@ router.put('/:id', requireManager, async (req, res) => {
 });
 
 // Delete technician (manager only)
-router.delete('/:id', requireManager, async (req, res) => {
+router.delete('/:id', requireAuth, requireManager, async (req, res) => {
   try {
     const technician = await Technician.findOneAndDelete({
       $or: [

@@ -100,5 +100,7 @@ app.use((req, res) => {
 const PORT = process.env.PORT || 8084;
 
 connectDatabase().then(() => {
-  app.listen(PORT);
+  app.listen(PORT, () => {
+    console.log(`BackendFiber listening on port ${PORT}`);
+  });
 });

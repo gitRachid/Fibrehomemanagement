@@ -144,7 +144,11 @@ export default function GestionUtilisateursScreen() {
       }
       handleCloseForm();
     } catch (error: any) {
-      const errorMessage = error?.message || 'Une erreur est survenue lors de la sauvegarde';
+      const status = error?.status;
+      const errorMessage =
+        status === 403
+          ? 'Seul un gestionnaire peut créer ou modifier des utilisateurs. Déconnectez-vous et reconnectez-vous avec le compte admin (ADMIN_EMAIL / ADMIN_PASSWORD).'
+          : error?.message || 'Une erreur est survenue lors de la sauvegarde';
       Alert.alert('Erreur', errorMessage);
       console.error('Save error:', error);
     }

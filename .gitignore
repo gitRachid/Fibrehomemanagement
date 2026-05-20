@@ -48,5 +48,6 @@ deploy/env/minio.env
 backendfiber/uploads/
 backups/
 dossier_technique_*.xlsx
+*.apk
 deploy/env/api.env
 deploy/env/minio.env
