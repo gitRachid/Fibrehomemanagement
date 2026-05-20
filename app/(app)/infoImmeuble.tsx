@@ -159,6 +159,9 @@ export default function InfoImmeubleScreen() {
   const [showImportModal, setShowImportModal] = useState(false);
   const [importFilePath, setImportFilePath] = useState('');
   const [isImporting, setIsImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState<{ done: number; total: number } | null>(null);
+
+  const IMPORT_CHUNK_SIZE = 200;
   const [locallyImportedBuildings, setLocallyImportedBuildings] = useState<ApiBuilding[]>([]);
   const [technicianFilter, setTechnicianFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -639,20 +642,37 @@ export default function InfoImmeubleScreen() {
         return;
       }
 
-      let successCount = 0;
       const errors: string[] = [];
       const importedNow: ApiBuilding[] = [];
-      for (const building of buildings) {
-        const { __row, ...payload } = building;
+      let totalModified = 0;
+      let totalUpserted = 0;
+      let totalSkipped = 0;
+
+      setImportProgress({ done: 0, total: buildings.length });
+
+      for (let offset = 0; offset < buildings.length; offset += IMPORT_CHUNK_SIZE) {
+        const chunk = buildings.slice(offset, offset + IMPORT_CHUNK_SIZE);
+        setImportProgress({ done: offset, total: buildings.length });
+
+        const payloads = chunk.map(({ __row, ...payload }) => payload);
         try {
-          const response = await buildingsApi.create(payload);
-          const created = ((response as any)?.data ?? payload) as ApiBuilding;
-          importedNow.push({ ...created, ...payload, zone: selectedZone });
-          successCount++;
-        } catch (error: any) {
-          errors.push(`Ligne ${__row}: ${payload.idImmeuble} - ${error?.message || 'Erreur import'}`);
+          const result = await buildingsApi.bulkUpdate(payloads);
+          totalModified += result.modifiedCount ?? 0;
+          totalUpserted += result.upsertedCount ?? 0;
+          totalSkipped += result.skipped ?? 0;
+          if (result.failed && result.failed > 0) {
+            errors.push(`Lot ${Math.floor(offset / IMPORT_CHUNK_SIZE) + 1}: ${result.failed} échec(s)`);
+          }
+          for (const payload of payloads) {
+            importedNow.push({ ...payload, zone: payload.zone || selectedZone } as ApiBuilding);
+          }
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : 'Erreur import';
+          errors.push(`Lot ${Math.floor(offset / IMPORT_CHUNK_SIZE) + 1}: ${message}`);
         }
       }
+
+      setImportProgress({ done: buildings.length, total: buildings.length });
 
       if (importedNow.length > 0) {
         setLocallyImportedBuildings((previous) => [
@@ -665,12 +685,22 @@ export default function InfoImmeubleScreen() {
       setShowImportModal(false);
       setImportFilePath('');
 
-      const detail = errors.length > 0 ? `\n\nDétails:\n${errors.slice(0, 5).join('\n')}${errors.length > 5 ? '\n...' : ''}` : '';
-      Alert.alert('Import terminé', `${successCount} immeuble(s) importé(s)\n${errors.length} erreur(s)${detail}`);
+      const successCount = totalModified + totalUpserted;
+      const detail =
+        errors.length > 0
+          ? `\n\nDétails:\n${errors.slice(0, 5).join('\n')}${errors.length > 5 ? '\n...' : ''}`
+          : '';
+      Alert.alert(
+        'Import terminé',
+        `${successCount} immeuble(s) enregistré(s) (${totalUpserted} créés, ${totalModified} mis à jour)` +
+          (totalSkipped > 0 ? `\n${totalSkipped} ligne(s) ignorée(s)` : '') +
+          (errors.length > 0 ? `\n${errors.length} lot(s) en erreur${detail}` : ''),
+      );
     } catch (error) {
       Alert.alert('Erreur', `Échec de l'import Excel: ${error instanceof Error ? error.message : 'Erreur inconnue'}`);
     } finally {
       setIsImporting(false);
+      setImportProgress(null);
     }
   };
 
@@ -1437,6 +1467,12 @@ export default function InfoImmeubleScreen() {
               </Text>
             ) : null}
 
+            {isImporting && importProgress ? (
+              <Text style={[styles.importProgressText, { color: isDark ? '#93c5fd' : '#2563eb' }]}>
+                Envoi {importProgress.done} / {importProgress.total} immeubles…
+              </Text>
+            ) : null}
+
             <View style={styles.importActions}>
               <TouchableOpacity
                 style={[styles.importActionButton, styles.cancelImportButton]}
@@ -1454,7 +1490,11 @@ export default function InfoImmeubleScreen() {
                 disabled={isImporting}
               >
                 <Text style={styles.confirmImportText}>
-                  {isImporting ? 'Import...' : 'Importer'}
+                  {isImporting && importProgress
+                    ? `${importProgress.done}/${importProgress.total}`
+                    : isImporting
+                      ? 'Import...'
+                      : 'Importer'}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -1957,6 +1997,12 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 19,
     marginBottom: 14,
+  },
+  importProgressText: {
+    fontSize: 14,
+    fontWeight: '600',
+    textAlign: 'center',
+    marginBottom: 10,
   },
   pickFileButton: {
     borderRadius: 10,

@@ -117,9 +117,17 @@ export const buildingsApi = {
     return apiClient.delete<Building>(`/buildings/${id}`);
   },
 
-  // Bulk update
-  bulkUpdate: async (buildings: Building[]) => {
-    return apiClient.post<{ modifiedCount: number; upsertedCount: number }>('/buildings/bulk-update', { buildings });
+  // Bulk upsert (import Excel — max 300 par requête)
+  bulkUpdate: async (buildings: Omit<Building, '_id'>[]) => {
+    return apiClient.post<{
+      success: boolean;
+      modifiedCount: number;
+      upsertedCount: number;
+      skipped?: number;
+      failed?: number;
+      writeErrors?: { index: number; message: string }[];
+      message?: string;
+    }>('/buildings/bulk-update', { buildings });
   },
 
   /** Manager only — archive every non-archived building in the zone (same zone keys as the Zones screen). */

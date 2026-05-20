@@ -270,27 +270,94 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-// Bulk update buildings
+const BULK_BUILDINGS_MAX = 300;
+
+const sanitizeBulkBuilding = (raw) => {
+  if (!raw || typeof raw !== 'object') return null;
+  const copy = { ...raw };
+  delete copy._id;
+  delete copy.__row;
+  delete copy.createdAt;
+  delete copy.updatedAt;
+  delete copy.lastModified;
+  delete copy.photos;
+  if (!copy.idImmeuble || !String(copy.idImmeuble).trim()) return null;
+  copy.idImmeuble = String(copy.idImmeuble).trim();
+  copy.idImmeubleSysteme = String(copy.idImmeubleSysteme || copy.idImmeuble).trim();
+  copy.lastModified = new Date();
+  return copy;
+};
+
+// Bulk upsert buildings (import Excel — lots de 300 max par requête)
 router.post('/bulk-update', async (req, res) => {
   try {
+    if (req.user && req.user.role !== 'manager') {
+      return res.status(403).json({ success: false, message: 'Forbidden' });
+    }
+
     const { buildings } = req.body;
     if (!Array.isArray(buildings) || buildings.length === 0) {
       return res.status(400).json({ success: false, message: 'buildings must be a non-empty array' });
     }
-    
-    const operations = buildings.map(building => ({
-      updateOne: {
-        filter: { idImmeuble: building.idImmeuble },
-        update: { ...building, lastModified: new Date() },
-        upsert: true
-      }
-    }));
+    if (buildings.length > BULK_BUILDINGS_MAX) {
+      return res.status(400).json({
+        success: false,
+        message: `Maximum ${BULK_BUILDINGS_MAX} buildings per request`,
+      });
+    }
 
-    const result = await Building.bulkWrite(operations);
-    
+    const operations = [];
+    let skipped = 0;
+    for (const raw of buildings) {
+      const doc = sanitizeBulkBuilding(raw);
+      if (!doc) {
+        skipped += 1;
+        continue;
+      }
+      operations.push({
+        updateOne: {
+          filter: { idImmeuble: doc.idImmeuble },
+          update: {
+            $set: doc,
+            $setOnInsert: { createdAt: new Date() },
+          },
+          upsert: true,
+        },
+      });
+    }
+
+    if (operations.length === 0) {
+      return res.status(400).json({ success: false, message: 'No valid buildings to import' });
+    }
+
+    let modifiedCount = 0;
+    let upsertedCount = 0;
+    const writeErrors = [];
+
+    try {
+      const result = await Building.bulkWrite(operations, { ordered: false });
+      modifiedCount = result.modifiedCount ?? 0;
+      upsertedCount = result.upsertedCount ?? 0;
+    } catch (error) {
+      if (error.name === 'MongoBulkWriteError' && error.result) {
+        modifiedCount = error.result.modifiedCount ?? 0;
+        upsertedCount = error.result.upsertedCount ?? 0;
+        for (const we of error.writeErrors || []) {
+          writeErrors.push({ index: we.index, message: we.errmsg || we.message });
+        }
+      } else {
+        throw error;
+      }
+    }
+
     res.json({
       success: true,
-      message: `${result.modifiedCount} buildings updated, ${result.upsertedCount} created`
+      modifiedCount,
+      upsertedCount,
+      skipped,
+      failed: writeErrors.length,
+      writeErrors: writeErrors.slice(0, 20),
+      message: `${modifiedCount} mis à jour, ${upsertedCount} créés`,
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
