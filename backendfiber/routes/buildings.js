@@ -61,7 +61,11 @@ router.get('/', async (req, res) => {
     } = req.query;
 
     const pageNumber = Math.max(1, Number(page) || 1);
-    const limitNumber = Math.min(200, Math.max(1, Number(limit) || 50));
+    const limitRaw = String(limit ?? '');
+    const limitNumber =
+      limitRaw === 'all' || limitRaw === '0' || Number(limit) === 0
+        ? 0
+        : Math.min(10000, Math.max(1, Number(limit) || 50));
 
     let query = {};
     
@@ -78,19 +82,18 @@ router.get('/', async (req, res) => {
     }
     query = await applyTechnicianAccessFilter(req, query);
 
-    const buildings = await Building.find(query)
-      .sort({ lastModified: -1 })
-      .limit(limitNumber)
-      .skip((pageNumber - 1) * limitNumber)
-      .populate('photos');
-
+    let findQuery = Building.find(query).sort({ lastModified: -1 }).populate('photos');
+    if (limitNumber > 0) {
+      findQuery = findQuery.limit(limitNumber).skip((pageNumber - 1) * limitNumber);
+    }
+    const buildings = await findQuery;
     const count = await Building.countDocuments(query);
 
     res.json({
       success: true,
       count,
-      totalPages: Math.ceil(count / limitNumber),
-      currentPage: pageNumber,
+      totalPages: limitNumber > 0 ? Math.ceil(count / limitNumber) : 1,
+      currentPage: limitNumber > 0 ? pageNumber : 1,
       data: buildings
     });
   } catch (error) {

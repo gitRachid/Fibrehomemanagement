@@ -211,7 +211,7 @@ export default function InfoImmeubleScreen() {
   const backendStatusFilter = statusFilter === 'all' ? 'all' : statusFilter;
   const { data: apiBuildings, isLoading, refetch } = useBuildings(selectedZone ? undefined : itemId, {
     status: backendStatusFilter,
-    limit: 200,
+    limit: 0,
   });
   const mergedBuildings = Array.from(
     [...(apiBuildings ?? []), ...locallyImportedBuildings]
